@@ -9,7 +9,6 @@ from PIL import Image, ImageDraw, ImageFont
 API_TOKEN = '8951535425:AAHUWdQgR36yjvIq-6NdUt1sIDrreYXGAuE'
 bot = telebot.TeleBot(API_TOKEN)
 
-ADMIN_IDS = [123456789, 987654321]  # ضع معرفات (User IDs) المشرفين هنا
 TEMPLATE_PASSWORD = "secure_password123"  # كلمة مرور قسم القولبة
 
 # --- إعداد قاعدة البيانات ---
@@ -52,10 +51,6 @@ ACTIVITIES = {
 # ذاكرة مؤقتة لتتبع خطوات المستخدم (Session State)
 user_sessions = {}
 
-# --- الدوال المساعدة للتأكد من المشرفين ---
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
-
 # --- القائمة الرئيسية ---
 def main_menu(user_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -66,10 +61,6 @@ def main_menu(user_id):
     markup.add(btn_archive)
     markup.add(btn_stats, btn_template)
     
-    if is_admin(user_id):
-        btn_admin = types.InlineKeyboardButton("👑 لوحة تحكم المشرفين (سحب البيانات)", callback_data="admin_panel")
-        markup.add(btn_admin)
-        
     return markup
 
 @bot.message_handler(commands=['start', 'help'])
@@ -158,24 +149,6 @@ def callback_listener(call):
         selected_month = data.replace("runstat_", "")
         generate_statistics(chat_id, selected_month)
 
-    # --- مسار المشرفين (سحب البيانات للتحميل) ---
-    elif data == "admin_panel" and is_admin(chat_id):
-        markup = types.InlineKeyboardMarkup(row_width=3)
-        buttons = [types.InlineKeyboardButton(m, callback_data=f"pullm_{m}") for m in MONTHS]
-        markup.add(*buttons)
-        bot.edit_message_text("👑 لوحة سحب البيانات - اختر الشهر المطلوبة تقاريره:", chat_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("pullm_"):
-        user_sessions[chat_id]['pull_month'] = data.replace("pullm_", "")
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        buttons = [types.InlineKeyboardButton(w, callback_data=f"pullw_{w}") for w in WEEKS]
-        markup.add(*buttons)
-        bot.edit_message_text("👑 اختر الأسبوع لسحب البيانات فورا:", chat_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("pullw_"):
-        pull_week = data.replace("pullw_", "")
-        pull_month = user_sessions[chat_id].get('pull_month', '')
-        pull_data_for_admin(chat_id, pull_month, pull_week)
 
     # --- مسار القولبة ---
     elif data == "start_template":
@@ -233,13 +206,7 @@ def process_archive_input(message):
 
     bot.send_message(chat_id, "✅ تم حفظ التوثيق وأرشدته في قاعدة البيانات بنجاح!", reply_markup=main_menu(chat_id))
 
-    # إشعار فوري للمشرفين
-    for admin_id in ADMIN_IDS:
-        try:
-            admin_msg = f"🔔 *إشعار أرشفة جديد:*\n👤 بواسطة: @{message.from_user.username}\n📅 الشهر: {session['month']} | {session['week']}\n🗂 النوع: {session['activity']}\n📄 طبيعة المادة: {content_type}"
-            bot.send_message(admin_id, admin_msg, parse_mode="Markdown")
-        except Exception:
-            pass
+
 
 # --- نظام التقارير الإحصائية ---
 def generate_statistics(chat_id, month):
@@ -266,34 +233,6 @@ def generate_statistics(chat_id, month):
     markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة", callback_data="main_menu"))
     bot.send_message(chat_id, report, parse_mode="Markdown", reply_markup=markup)
 
-# --- محرك سحب البيانات والتقارير للمشرفين ---
-def pull_data_for_admin(admin_id, month, week):
-    conn = sqlite3.connect('archive_bot.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT username, activity, content_type, content_data, file_id FROM archive WHERE month=? AND week=?", (month, week))
-    rows = cursor.fetchall()
-    conn.close()
-
-    if not rows:
-        bot.send_message(admin_id, f"📭 لا توجد أي بيانات مؤرشفة لشهر {month} - {week}.", reply_markup=main_menu(admin_id))
-        return
-
-    bot.send_message(admin_id, f"📦 جاري سحب وتجميع البيانات لشهر *{month}* (*{week}*)... الرجاء الانتظار:", parse_mode="Markdown")
-    
-    for row in rows:
-        username, activity, c_type, c_data, file_id = row
-        caption_text = f"👤 الموثق: @{username}\n🗂 تصنيف النشاط: {activity}\n📝 المضمون/الخبر: {c_data}"
-        
-        if file_id == "":  # نص فقط
-            bot.send_message(admin_id, f"📄 *[نص مؤرشف]*\n{caption_text}", parse_mode="Markdown")
-        elif c_type == "صورة":
-            bot.send_photo(admin_id, file_id, caption=caption_text)
-        elif c_type == "فيديو":
-            bot.send_video(admin_id, file_id, caption=caption_text)
-        elif c_type == "ملف / PDF":
-            bot.send_document(admin_id, file_id, caption=caption_text)
-
-    bot.send_message(admin_id, "✨ تم سحب جميع ملفات وتقارير الفترة المحددة بنجاح.", reply_markup=main_menu(admin_id))
 
 # --- نظام القولبة الذكي ---
 def check_template_password(message):
