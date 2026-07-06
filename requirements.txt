@@ -1,2 +1,4 @@
 pyTelegramBotAPI
 Pillow
+pandas
+openpyxl
