@@ -1,0 +1,5 @@
+pyTelegramBotAPI
+Pillow
+pandas
+openpyxl
+hijri-converter
