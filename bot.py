@@ -4,850 +4,726 @@ import sqlite3
 import os
 import json
 from datetime import datetime
-import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
 
-# --- الإعدادات والرموز الافتراضية الثنائية ---
-TOKEN = '8951535425:AAHUWdQgR36yjvIq-6NdUt1sIDrreYXGAuE'
-bot = telebot.TeleBot(TOKEN)
+# --- الإعدادات الأساسية ---
+API_TOKEN = '8951535425:AAHUWdQgR36yjvIq-6NdUt1sIDrreYXGAuE'
+bot = telebot.TeleBot(API_TOKEN)
 
-# أرقام افتراضية للرموز السرية (تتغير ديناميكياً من لوحة التحكم)
-DEFAULT_OWNER_PASS = "owner2026"
-DEFAULT_USER_PASS = "user2026"
+# --- ملف حفظ الرموز ---
+PASSWORDS_FILE = 'passwords.json'
 
-# --- إدارة قاعدة البيانات (SQLite) ---
+def load_passwords():
+    if os.path.exists(PASSWORDS_FILE):
+        with open(PASSWORDS_FILE, 'r') as f:
+            return json.load(f)
+    return {"admin_password": "admin123", "user_password": "user123"}
+
+def save_passwords(passwords):
+    with open(PASSWORDS_FILE, 'w') as f:
+        json.dump(passwords, f)
+
+# تهيئة الرموز
+passwords = load_passwords()
+save_passwords(passwords)
+
+# --- ملف حفظ الأنشطة الديناميكية ---
+ACTIVITIES_FILE = 'activities.json'
+
+def load_activities():
+    if os.path.exists(ACTIVITIES_FILE):
+        with open(ACTIVITIES_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return get_default_activities()
+
+def save_activities(activities):
+    with open(ACTIVITIES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(activities, f, ensure_ascii=False, indent=2)
+
+def get_default_activities():
+    return {
+        "فعاليات وندوات للمناسبات": ["صور مع الخبر", "فيديو"],
+        "اجتماعات ولقاءات": ["صورة مع الخبر"],
+        "ورشات": [],
+        "دورات": [],
+        "النزول الميداني + الزيارات": [],
+        "أنشطة الإعلام": [
+            "الإعلام الإذاعي (حلقة الأسبوع، برنامج الأمن والمجتمع، لقاءات إذاعية، مداخلات)",
+            "تحرير أخباري",
+            "رصد الشائعات",
+            "ردود على الشائعات",
+            "تنسيق مع القنوات الإعلامية",
+            "نشر منشورات توعوية أمنية",
+            "فلاشات/ريلز توعوية أمنية",
+            "الإعلام الصحفي (عدد الإصدار)",
+            "إنتاج فلاشات",
+            "إنتاج أفلام",
+            "إنتاج جرافيكس",
+            "إنتاج ريلزات",
+            "تقارير"
+        ],
+        "أنشطة أخرى": [
+            "ملفات مستند ورش",
+            "ملفات مستند اليوم الثقافي",
+            "ملفات مستند الجانب الإعلامي",
+            "ملفات مستند أنشطة أخرى"
+        ],
+        "الأنشطة مع التعبئة العامة": []
+    }
+
+# تحميل الأنشطة
+ACTIVITIES = load_activities()
+save_activities(ACTIVITIES)
+
+# --- إعداد قاعدة البيانات ---
 def init_db():
-    conn = sqlite3.connect('library_archive.db')
+    conn = sqlite3.connect('archive_bot.db')
     cursor = conn.cursor()
-    
-    # جدول الإعدادات العامة (الرموز الحالية)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY, value TEXT)''')
-    
-    # جدول المشرفين والأعضاء وصلاحياتهم
-    cursor.execute('''CREATE TABLE IF NOT EXISTS members (
-                        user_id INTEGER PRIMARY KEY, 
-                        username TEXT, 
-                        role TEXT, 
-                        status TEXT DEFAULT 'active')''')
-    
-    # جدول قائمة الأنشطة والأقسام الديناميكية
-    cursor.execute('''CREATE TABLE IF NOT EXISTS activity_types (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        category TEXT, 
-                        sub_category TEXT)''')
-    
-    # جدول الأرشيف العام للمواد
-    cursor.execute('''CREATE TABLE IF NOT EXISTS archive_master (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER,
-                        username TEXT,
-                        hijri_month TEXT,
-                        hijri_week TEXT,
-                        main_category TEXT,
-                        sub_category TEXT,
-                        content_type TEXT,
-                        content_data TEXT,
-                        file_id TEXT,
-                        actual_date TEXT,
-                        timestamp TEXT)''')
-    
-    # إدخال القيم الافتراضية إذا كانت فارغة
-    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('owner_pass', ?)", (DEFAULT_OWNER_PASS,))
-    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('user_pass', ?)", (DEFAULT_USER_PASS,))
-    
-    # التحقق من وجود الأنشطة الافتراضية بحسب الوثيقة
-    cursor.execute("SELECT COUNT(*) FROM activity_types")
-    if cursor.fetchone()[0] == 0:
-        default_activities = [
-            ("النزول الميداني والزيارات", "عام"),
-            ("أنشطة الإعلام", "الإعلام الإذاعي"),
-            ("أنشطة الإعلام", "التحرير الإخباري"),
-            ("أنشطة الإعلام", "رصد الشائعات | الردود على الشائعات"),
-            ("أنشطة الإعلام", "التنسيق مع القنوات الإعلامية"),
-            ("أنشطة الإعلام", "نشر منشورات توعوية أمنية"),
-            ("أنشطة الإعلام", "فلاشات وريلز توعوية أمنية"),
-            ("أنشطة الإعلام", "الإعلام الصحفي"),
-            ("أنشطة الإعلام", "الإنتاج الفني"),
-            ("أنشطة الإعلام", "تقارير إعلامية"),
-            ("أنشطة الإعلام", "الأنشطة مع التعبئة العامة"),
-            ("أنشطة أخرى", "ملفات مستند ورش"),
-            ("أنشطة أخرى", "ملفات مستند اليوم الثقافي"),
-            ("أنشطة أخرى", "ملفات مستند الجانب الإعلامي"),
-            ("أنشطة أخرى", "ملفات مستند أنشطة أخرى")
-        ]
-        cursor.executemany("INSERT INTO activity_types (category, sub_category) VALUES (?, ?)", default_activities)
-        
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS archive (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            month TEXT,
+            week TEXT,
+            activity TEXT,
+            content_type TEXT,
+            content_data TEXT,
+            file_id TEXT,
+            timestamp TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hidden_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER,
+            note TEXT,
+            timestamp TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
 init_db()
 
-# --- دالات جلب وفحص الصلاحيات والرموز ---
-def get_setting(key, default):
-    conn = sqlite3.connect('library_archive.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
-    res = cursor.fetchone()
-    conn.close()
-    return res[0] if res else default
+# --- بيانات القوائم الشجرية ---
+MONTHS = ["محرم", "صفر", "ربيع الأول", "ربيع الآخر", "جمادى الأولى", "جمادى الآخرة", "رجب", "شعبان", "رمضان", "شوال", "ذو القعدة", "ذو الحجة"]
+WEEKS = ["الأسبوع الأول", "الأسبوع الثاني", "الأسبوع الثالث", "الأسبوع الرابع"]
 
-def set_setting(key, value):
-    conn = sqlite3.connect('library_archive.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
-    conn.commit()
-    conn.close()
-
-def get_user_role(user_id):
-    conn = sqlite3.connect('library_archive.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT role, status FROM members WHERE user_id=?", (user_id,))
-    res = cursor.fetchone()
-    conn.close()
-    if res:
-        if res[1] == 'banned': return 'banned'
-        return res[0]
-    return None
-
-# ذاكرة الجلسات النشطة لتتبع تدفق مدخلات كل مستخدم (State Management)
+# ذاكرة مؤقتة لتتبع خطوات المستخدم
 user_sessions = {}
+authenticated_users = {}  # لتتبع المستخدمين المصادق عليهم ودورهم
 
-# --- لوحات المفاتيح والأزرار الذكية ---
-def build_main_menu(user_id):
-    role = get_user_role(user_id)
+# --- الدوال المساعدة ---
+def is_admin(user_id):
+    return authenticated_users.get(user_id) == "admin"
+
+def is_authenticated(user_id):
+    return user_id in authenticated_users
+
+# --- القائمة الرئيسية ---
+def main_menu(user_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
+    btn_archive = types.InlineKeyboardButton("📁 البدء في الأرشفة والتصنيف", callback_data="start_archive")
+    btn_stats = types.InlineKeyboardButton("📊 التقارير الإحصائية", callback_data="view_stats")
     
-    if role == 'banned':
-        return None
-        
-    # أزرار واجهة المستخدم الأساسية
-    btn_archive = types.InlineKeyboardButton("📂 البدء في الأرشفة والتصنيف", callback_data="ui_archive")
-    btn_stats = types.InlineKeyboardButton("📊 التقارير الإحصائية والاسترجاع", callback_data="ui_stats")
-    btn_template = types.InlineKeyboardButton("🎨 نظام القولبة الذكي", callback_data="ui_template")
     markup.add(btn_archive)
-    markup.add(btn_stats, btn_template)
+    markup.add(btn_stats)
     
-    # إضافة زر التحكم الإضافي للمشرفين والمالك
-    if role in ['owner', 'admin']:
-        btn_admin = types.InlineKeyboardButton("⚙️ لوحة التحكم الإدارية للمشرفين", callback_data="admin_main")
+    if is_admin(user_id):
+        btn_admin = types.InlineKeyboardButton("👑 لوحة تحكم المشرفين", callback_data="admin_panel")
+        btn_change_pass = types.InlineKeyboardButton("🔑 تغيير الرموز", callback_data="change_passwords")
+        btn_hidden = types.InlineKeyboardButton("🔒 الخانة المخفية", callback_data="hidden_section")
+        btn_manage_acts = types.InlineKeyboardButton("📝 إدارة الأنشطة", callback_data="manage_activities")
         markup.add(btn_admin)
+        markup.add(btn_change_pass, btn_hidden)
+        markup.add(btn_manage_acts)
         
     return markup
 
-# --- استقبال أمر البدء /start ---
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    user_id = message.chat.id
-    role = get_user_role(user_id)
+# --- شاشة تسجيل الدخول ---
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    user_sessions[message.chat.id] = {}
     
-    if role == 'banned':
-        bot.send_message(user_id, "❌ عذراً، لقد تم حظر حسابك من قبل المشرف العام.")
-        return
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_admin_login = types.InlineKeyboardButton("👑 دخول كمشرف", callback_data="login_admin")
+    btn_user_login = types.InlineKeyboardButton("👤 دخول كمستخدم", callback_data="login_user")
+    markup.add(btn_admin_login, btn_user_login)
+    
+    bot.send_message(
+        message.chat.id,
+        "👋 أهلاً بك في بوت المكتبة الإلكترونية لأرشفة التقارير والتوثيقات.\n\n🔐 الرجاء اختيار نوع الدخول:",
+        reply_markup=markup
+    )
 
-    # إذا كان مسجلاً مسبقاً، تفتح القائمة الرئيسية مباشرة
-    if role in ['owner', 'admin', 'user']:
-        bot.send_message(user_id, "📲 مرحباً بك مجدداً في منظومة الأرشفة الإلكترونية. اختر من القائمة التالية:", reply_markup=build_main_menu(user_id))
+# --- التحقق من رمز المشرف ---
+def verify_admin_password(message):
+    chat_id = message.chat.id
+    passwords = load_passwords()
+    
+    if message.text == passwords['admin_password']:
+        authenticated_users[chat_id] = "admin"
+        bot.send_message(chat_id, "✅ تم التحقق بنجاح! مرحباً بك كمشرف.", reply_markup=main_menu(chat_id))
     else:
-        user_sessions[user_id] = {"step": "wait_auth_code"}
-        bot.send_message(user_id, "🔒 *مرحباً بك في منظومة الأرشفة المحمية.*\n\nالرجاء إدخال الرمز السري المخصص لك لتفعيل صلاحيات الوصول الخاصة برتبتك:", parse_mode="Markdown")
+        bot.send_message(chat_id, "❌ الرمز غير صحيح! يرجى المحاولة مرة أخرى عبر /start")
 
-# --- دالة الاستماع والتحقق من الرموز والمدخلات النصية العامة ---
-@bot.message_handler(func=lambda msg: True, content_types=['text', 'photo', 'document', 'video'])
-def global_message_handler(message):
-    user_id = message.chat.id
-    role = get_user_role(user_id)
+# --- التحقق من رمز المستخدم ---
+def verify_user_password(message):
+    chat_id = message.chat.id
+    passwords = load_passwords()
     
-    if role == 'banned': return
-    
-    session = user_sessions.get(user_id, {})
-    step = session.get("step")
-    
-    # 1. مرحلة التحقق من رمز الدخول لأول مرة
-    if step == "wait_auth_code" and message.content_type == 'text':
-        entered_code = message.text.strip()
-        owner_pass = get_setting('owner_pass', DEFAULT_OWNER_PASS)
-        user_pass = get_setting('user_pass', DEFAULT_USER_PASS)
-        
-        conn = sqlite3.connect('library_archive.db')
-        cursor = conn.cursor()
-        
-        # فحص إذا كان هناك مالك للنظام أم لا لتحديد الرتبة
-        cursor.execute("SELECT COUNT(*) FROM members WHERE role='owner'")
-        has_owner = cursor.fetchone()[0] > 0
-        
-        if entered_code == owner_pass:
-            if not has_owner:
-                cursor.execute("INSERT OR REPLACE INTO members VALUES (?, ?, 'owner', 'active')", (user_id, message.from_user.username))
-                bot.send_message(user_id, "👑 تم اعتمادك بنجاح بصفتك *المشرف الرئيسي والمالك العام* للمنظومة بالصلاحيات المطلقة.", parse_mode="Markdown")
-            else:
-                cursor.execute("INSERT OR REPLACE INTO members VALUES (?, ?, 'admin', 'active')", (user_id, message.from_user.username))
-                bot.send_message(user_id, "⚙️ تم التحقق بنجاح وتفعيل صلاحياتك كـ *مشرف عادي*.", parse_mode="Markdown")
-            conn.commit()
-            user_sessions[user_id] = {}
-            bot.send_message(user_id, "الرجاء اختيار أحد الخيارات لتشغيل النظام:", reply_markup=build_main_menu(user_id))
-            
-        elif entered_code == user_pass:
-            cursor.execute("INSERT OR REPLACE INTO members VALUES (?, ?, 'user', 'active')", (user_id, message.from_user.username))
-            conn.commit()
-            user_sessions[user_id] = {}
-            bot.send_message(user_id, "✅ تم التحقق بنجاح. تم تفعيل حسابك بصفتك *مستخدم/عضو* مخول برفع التقارير والأرشفة.", parse_mode="Markdown")
-            bot.send_message(user_id, "الرجاء اختيار أحد الخيارات:", reply_markup=build_main_menu(user_id))
-        else:
-            bot.send_message(user_id, "❌ الرمز السري غير صحيح. يرجى مراجعة الإدارة وإعادة إدخال الرمز بدقة:")
-        conn.close()
-        return
+    if message.text == passwords['user_password']:
+        authenticated_users[chat_id] = "user"
+        bot.send_message(chat_id, "✅ تم التحقق بنجاح! مرحباً بك.", reply_markup=main_menu(chat_id))
+    else:
+        bot.send_message(chat_id, "❌ الرمز غير صحيح! يرجى المحاولة مرة أخرى عبر /start")
 
-    # 2. خطوة إرسال نص التقرير اليدوي بعد استلام الملف في مسار الأرشفة
-    elif step == "wait_archive_file":
-        session['msg_content'] = message
-        user_sessions[user_id] = session
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📅 أرشفة بتاريخ اليوم الحالي تلقائياً", callback_data="time_auto"))
-        markup.add(types.InlineKeyboardButton("✏️ إدخال تاريخ يوم محدد يدوياً", callback_data="time_manual"))
-        bot.send_message(user_id, "⏳ تم استلام المادة التوثيقية بنجاح. حدد الآن آلية التثبيت الزمني للتقرير:", reply_markup=markup)
-        return
-
-    # 3. إدخال تاريخ يدوي
-    elif step == "wait_manual_date" and message.content_type == 'text':
-        session['actual_date'] = message.text.strip()
-        user_sessions[user_id] = session
-        execute_final_archiving(user_id)
-        return
-
-    # 4. مسار استقبال صور القولبة الذكية
-    elif step == "wait_template_photos" and message.content_type == 'photo':
-        if 'template_photos' not in session:
-            session['template_photos'] = []
-        session['template_photos'].append(message.photo[-1].file_id)
-        user_sessions[user_id] = session
-        
-        current_count = len(session['template_photos'])
-        target_count = session['target_photos_count']
-        
-        if current_count < target_count:
-            bot.send_message(user_id, f"📥 تم استلام الصورة رقم ({current_count}). أرسل الصورة التالية:")
-        else:
-            session['step'] = "wait_template_text"
-            user_sessions[user_id] = session
-            bot.send_message(user_id, "✍️ رائع، تم استلام جميع الصور المطلوبة بنجاح. أرسل الآن نص التقرير المكتوب ليتم كتابته وتنسيقه أسفل القالب:")
-        return
-
-    elif step == "wait_template_text" and message.content_type == 'text':
-        session['template_text'] = message.text
-        user_sessions[user_id] = session
-        process_and_generate_template(user_id)
-        return
-
-    # 5. استقبال مدخلات البحث باليوم أو الأسبوع
-    elif step == "wait_search_day" and message.content_type == 'text':
-        fetch_and_send_archive_by_time(user_id, "day", message.text.strip())
-        return
-    elif step == "wait_search_week" and message.content_type == 'text':
-        fetch_and_send_archive_by_time(user_id, "week", message.text.strip())
-        return
-
-    # 6. مدخلات إدارة الأقسام من المالك الرئيسي
-    elif step == "wait_new_cat" and message.content_type == 'text':
-        parts = message.text.split("-")
-        if len(parts) == 2:
-            conn = sqlite3.connect('library_archive.db')
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO activity_types (category, sub_category) VALUES (?, ?)", (parts[0].strip(), parts[1].strip()))
-            conn.commit()
-            conn.close()
-            bot.send_message(user_id, "✅ تم إضافة القسم والتصنيف الجديد بنجاح إلى شجرة الأنشطة الديناميكية.", reply_markup=build_main_menu(user_id))
-        else:
-            bot.send_message(user_id, "❌ صيغة خاطئة. يجب كتابة: القسم الرئيسي - التصنيف الفرعي")
-        user_sessions[user_id] = {}
-        return
-        
-    elif step == "wait_new_user_pass" and message.content_type == 'text':
-        set_setting('user_pass', message.text.strip())
-        bot.send_message(user_id, f"🔒 تم تحديث رمز دخول المستخدمين الجديد إلى: {message.text.strip()}", reply_markup=build_main_menu(user_id))
-        user_sessions[user_id] = {}
-        return
-
-    elif step == "wait_new_admin_pass" and message.content_type == 'text':
-        set_setting('owner_pass', message.text.strip())
-        bot.send_message(user_id, f"👑 تم تحديث رمز دخول المشرفين الجديد إلى: {message.text.strip()}", reply_markup=build_main_menu(user_id))
-        user_sessions[user_id] = {}
-        return
-
-    elif step == "wait_add_admin_id" and message.content_type == 'text':
-        try:
-            target_id = int(message.text.strip())
-            conn = sqlite3.connect('library_archive.db')
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR REPLACE INTO members VALUES (?, 'مضاف يدويا', 'admin', 'active')", (target_id,))
-            conn.commit()
-            conn.close()
-            bot.send_message(user_id, f"✅ تم ترقية الحساب رقم {target_id} إلى رتبة مشرف عادي بنجاح.", reply_markup=build_main_menu(user_id))
-        except:
-            bot.send_message(user_id, "❌ حدث خطأ، تأكد من إرسال معرف رقمي صحيح (User ID).")
-        user_sessions[user_id] = {}
-        return
-
-    elif step == "wait_ban_user_id" and message.content_type == 'text':
-        try:
-            target_id = int(message.text.strip())
-            conn = sqlite3.connect('library_archive.db')
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR REPLACE INTO members VALUES (?, 'محظور يدويا', 'user', 'banned')", (target_id,))
-            conn.commit()
-            conn.close()
-            bot.send_message(user_id, f"🚫 تم حظر الحساب رقم {target_id} ومنعه من استخدام المنظومة نهائياً.", reply_markup=build_main_menu(user_id))
-        except:
-            bot.send_message(user_id, "❌ حدث خطأ، تأكد من إرسال معرف رقمي صحيح.")
-        user_sessions[user_id] = {}
-        return
-
-# --- معالجة الضغط على الأزرار (Callback Queries) ---
+# --- معالجة الأزرار المضمنة ---
 @bot.callback_query_handler(func=lambda call: True)
-def handle_callback_queries(call):
-    user_id = call.message.chat.id
-    role = get_user_role(user_id)
+def callback_listener(call):
+    chat_id = call.message.chat.id
     data = call.data
     
-    if role == 'banned': return
-    
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {}
-        
-    session = user_sessions[user_id]
+    if chat_id not in user_sessions:
+        user_sessions[chat_id] = {}
 
-    # العودة للرئيسية
-    if data == "go_home":
-        user_sessions[user_id] = {}
-        bot.edit_message_text("الرجاء اختيار أحد الخيارات لتشغيل النظام:", user_id, call.message.message_id, reply_markup=build_main_menu(user_id))
+    # --- تسجيل الدخول ---
+    if data == "login_admin":
+        msg = bot.edit_message_text("🔐 أدخل رمز المشرف:", chat_id, call.message.message_id)
+        bot.register_next_step_handler(msg, verify_admin_password)
+        
+    elif data == "login_user":
+        msg = bot.edit_message_text("🔐 أدخل رمز المستخدم:", chat_id, call.message.message_id)
+        bot.register_next_step_handler(msg, verify_user_password)
+
+    # العودة للقائمة الرئيسية
+    elif data == "main_menu":
+        if not is_authenticated(chat_id):
+            bot.edit_message_text("❌ يرجى تسجيل الدخول أولاً عبر /start", chat_id, call.message.message_id)
+            return
+        user_sessions[chat_id] = {}
+        bot.edit_message_text("الرجاء اختيار القسم المطلوب من القائمة أدناه:", chat_id, call.message.message_id, reply_markup=main_menu(chat_id))
+        
+    # --- مسار الأرشفة ---
+    elif data == "start_archive":
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        buttons = [types.InlineKeyboardButton(m, callback_data=f"month_{m}") for m in MONTHS]
+        markup.add(*buttons)
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
+        bot.edit_message_text("📅 الرجاء اختيار الشهر الهجري:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("month_"):
+        user_sessions[chat_id]['month'] = data.replace("month_", "")
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        buttons = [types.InlineKeyboardButton(w, callback_data=f"week_{w}") for w in WEEKS]
+        markup.add(*buttons)
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="start_archive"))
+        bot.edit_message_text(f"📅 الشهر: {user_sessions[chat_id]['month']}\n📌 الآن حدد الأسبوع:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("week_"):
+        user_sessions[chat_id]['week'] = data.replace("week_", "")
+        current_activities = load_activities()
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        act_keys = list(current_activities.keys())
+        for i, act in enumerate(act_keys):
+            markup.add(types.InlineKeyboardButton(act, callback_data=f"act_{i}"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="start_archive"))
+        bot.edit_message_text("🗂 اختر نوع النشاط المراد أرشفته:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("act_"):
+        act_index = int(data.replace("act_", ""))
+        current_activities = load_activities()
+        act_keys = list(current_activities.keys())
+        
+        if act_index < len(act_keys):
+            act_name = act_keys[act_index]
+            user_sessions[chat_id]['activity'] = act_name
+            
+            if current_activities[act_name]:
+                markup = types.InlineKeyboardMarkup(row_width=1)
+                for j, sub in enumerate(current_activities[act_name]):
+                    markup.add(types.InlineKeyboardButton(sub, callback_data=f"sub_{act_index}_{j}"))
+                markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="week_" + user_sessions[chat_id].get('week', '')))
+                bot.edit_message_text(f"📂 نشاط ({act_name})\nاختر التفريع:", chat_id, call.message.message_id, reply_markup=markup)
+            else:
+                user_sessions[chat_id]['sub_activity'] = "عام"
+                goToUploadStage(chat_id, call.message.message_id)
+
+    elif data.startswith("sub_"):
+        parts = data.replace("sub_", "").split("_")
+        act_index = int(parts[0])
+        sub_index = int(parts[1])
+        current_activities = load_activities()
+        act_keys = list(current_activities.keys())
+        
+        if act_index < len(act_keys):
+            act_name = act_keys[act_index]
+            subs = current_activities[act_name]
+            if sub_index < len(subs):
+                user_sessions[chat_id]['sub_activity'] = subs[sub_index]
+            else:
+                user_sessions[chat_id]['sub_activity'] = "عام"
+        else:
+            user_sessions[chat_id]['sub_activity'] = "عام"
+        goToUploadStage(chat_id, call.message.message_id)
+
+    # --- مسار التقارير الإحصائية ---
+    elif data == "view_stats":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("📊 تقرير شهري", callback_data="stat_month_select"))
+        markup.add(types.InlineKeyboardButton("📈 تقرير ربع سنوي", callback_data="stat_quarter"))
+        markup.add(types.InlineKeyboardButton("📉 تقرير نصف سنوي", callback_data="stat_half"))
+        markup.add(types.InlineKeyboardButton("🗓 تقرير سنوي", callback_data="stat_yearly"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
+        bot.edit_message_text("📊 اختر نوع الإحصائية المطلوبة:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data == "stat_month_select":
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        buttons = [types.InlineKeyboardButton(m, callback_data=f"runstat_{m}") for m in MONTHS]
+        markup.add(*buttons)
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="view_stats"))
+        bot.edit_message_text("اختر الشهر المراد توليد إحصائية له:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("runstat_"):
+        selected_month = data.replace("runstat_", "")
+        generate_statistics(chat_id, selected_month)
+
+    elif data == "stat_quarter":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("الربع الأول (محرم - ربيع الأول)", callback_data="quarter_1"))
+        markup.add(types.InlineKeyboardButton("الربع الثاني (ربيع الآخر - جمادى الآخرة)", callback_data="quarter_2"))
+        markup.add(types.InlineKeyboardButton("الربع الثالث (رجب - رمضان)", callback_data="quarter_3"))
+        markup.add(types.InlineKeyboardButton("الربع الرابع (شوال - ذو الحجة)", callback_data="quarter_4"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="view_stats"))
+        bot.edit_message_text("📈 اختر الربع السنوي:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("quarter_"):
+        quarter_num = int(data.replace("quarter_", ""))
+        quarters = {
+            1: ["محرم", "صفر", "ربيع الأول"],
+            2: ["ربيع الآخر", "جمادى الأولى", "جمادى الآخرة"],
+            3: ["رجب", "شعبان", "رمضان"],
+            4: ["شوال", "ذو القعدة", "ذو الحجة"]
+        }
+        generate_period_statistics(chat_id, quarters[quarter_num], f"الربع {quarter_num}")
+
+    elif data == "stat_half":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("النصف الأول (محرم - جمادى الآخرة)", callback_data="half_1"))
+        markup.add(types.InlineKeyboardButton("النصف الثاني (رجب - ذو الحجة)", callback_data="half_2"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="view_stats"))
+        bot.edit_message_text("📉 اختر النصف السنوي:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("half_"):
+        half_num = int(data.replace("half_", ""))
+        halves = {
+            1: ["محرم", "صفر", "ربيع الأول", "ربيع الآخر", "جمادى الأولى", "جمادى الآخرة"],
+            2: ["رجب", "شعبان", "رمضان", "شوال", "ذو القعدة", "ذو الحجة"]
+        }
+        generate_period_statistics(chat_id, halves[half_num], f"النصف {'الأول' if half_num == 1 else 'الثاني'}")
+
+    elif data == "stat_yearly":
+        generate_period_statistics(chat_id, MONTHS, "السنة الكاملة")
+
+    # --- مسار المشرفين (سحب البيانات) ---
+    elif data == "admin_panel" and is_admin(chat_id):
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        buttons = [types.InlineKeyboardButton(m, callback_data=f"pullm_{m}") for m in MONTHS]
+        markup.add(*buttons)
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
+        bot.edit_message_text("👑 لوحة سحب البيانات - اختر الشهر:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("pullm_"):
+        user_sessions[chat_id]['pull_month'] = data.replace("pullm_", "")
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        buttons = [types.InlineKeyboardButton(w, callback_data=f"pullw_{w}") for w in WEEKS]
+        markup.add(*buttons)
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="admin_panel"))
+        bot.edit_message_text("👑 اختر الأسبوع لسحب البيانات:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("pullw_"):
+        pull_week = data.replace("pullw_", "")
+        pull_month = user_sessions[chat_id].get('pull_month', '')
+        pull_data_for_admin(chat_id, pull_month, pull_week)
+
+    # --- تغيير الرموز ---
+    elif data == "change_passwords" and is_admin(chat_id):
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("🔑 تغيير رمز المشرف", callback_data="change_admin_pass"))
+        markup.add(types.InlineKeyboardButton("🔑 تغيير رمز المستخدم", callback_data="change_user_pass"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
+        
+        current_passwords = load_passwords()
+        bot.edit_message_text(
+            f"🔑 إدارة الرموز:\n\n👑 رمز المشرف الحالي: {current_passwords['admin_password']}\n👤 رمز المستخدم الحالي: {current_passwords['user_password']}\n\nاختر الرمز المراد تغييره:",
+            chat_id, call.message.message_id, reply_markup=markup
+        )
+
+    elif data == "change_admin_pass" and is_admin(chat_id):
+        msg = bot.send_message(chat_id, "✍️ أدخل رمز المشرف الجديد:")
+        bot.register_next_step_handler(msg, save_new_admin_password)
+
+    elif data == "change_user_pass" and is_admin(chat_id):
+        msg = bot.send_message(chat_id, "✍️ أدخل رمز المستخدم الجديد:")
+        bot.register_next_step_handler(msg, save_new_user_password)
+
+    # --- الخانة المخفية ---
+    elif data == "hidden_section" and is_admin(chat_id):
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("📝 إضافة ملاحظة سرية", callback_data="add_hidden_note"))
+        markup.add(types.InlineKeyboardButton("📋 عرض الملاحظات السرية", callback_data="view_hidden_notes"))
+        markup.add(types.InlineKeyboardButton("🗑 حذف جميع الملاحظات", callback_data="clear_hidden_notes"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
+        bot.edit_message_text("🔒 الخانة المخفية - لا يراها إلا المشرفون:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data == "add_hidden_note" and is_admin(chat_id):
+        msg = bot.send_message(chat_id, "✍️ اكتب الملاحظة السرية:")
+        bot.register_next_step_handler(msg, save_hidden_note)
+
+    elif data == "view_hidden_notes" and is_admin(chat_id):
+        conn = sqlite3.connect('archive_bot.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT note, timestamp FROM hidden_notes ORDER BY id DESC LIMIT 20")
+        notes = cursor.fetchall()
+        conn.close()
+        
+        if not notes:
+            bot.send_message(chat_id, "📭 لا توجد ملاحظات سرية محفوظة.", reply_markup=main_menu(chat_id))
+        else:
+            text = "🔒 *الملاحظات السرية:*\n\n"
+            for i, (note, ts) in enumerate(notes, 1):
+                text += f"{i}. {note}\n   ⏰ {ts}\n\n"
+            bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu(chat_id))
+
+    elif data == "clear_hidden_notes" and is_admin(chat_id):
+        conn = sqlite3.connect('archive_bot.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM hidden_notes")
+        conn.commit()
+        conn.close()
+        bot.send_message(chat_id, "✅ تم حذف جميع الملاحظات السرية.", reply_markup=main_menu(chat_id))
+
+    # --- إدارة الأنشطة ---
+    elif data == "manage_activities" and is_admin(chat_id):
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("➕ إضافة نشاط رئيسي جديد", callback_data="add_main_activity"))
+        markup.add(types.InlineKeyboardButton("➕ إضافة تفريع لنشاط موجود", callback_data="add_sub_activity"))
+        markup.add(types.InlineKeyboardButton("🗑 حذف نشاط رئيسي", callback_data="delete_main_activity"))
+        markup.add(types.InlineKeyboardButton("🗑 حذف تفريع من نشاط", callback_data="delete_sub_activity"))
+        markup.add(types.InlineKeyboardButton("✏️ تعديل اسم نشاط", callback_data="rename_activity"))
+        markup.add(types.InlineKeyboardButton("📋 عرض جميع الأنشطة", callback_data="list_all_activities"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
+        bot.edit_message_text("📝 إدارة الأنشطة والتصنيفات:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data == "add_main_activity" and is_admin(chat_id):
+        msg = bot.send_message(chat_id, "✍️ أدخل اسم النشاط الرئيسي الجديد:")
+        bot.register_next_step_handler(msg, process_add_main_activity)
+
+    elif data == "add_sub_activity" and is_admin(chat_id):
+        current_activities = load_activities()
+        text = "📋 الأنشطة الرئيسية الحالية:\n\n"
+        for i, act in enumerate(current_activities.keys(), 1):
+            text += f"{i}. {act}\n"
+        text += "\n✍️ أرسل رقم النشاط ثم فاصلة ثم اسم التفريع الجديد\nمثال: 1,تفريع جديد"
+        msg = bot.send_message(chat_id, text)
+        bot.register_next_step_handler(msg, process_add_sub_activity)
+
+    elif data == "delete_main_activity" and is_admin(chat_id):
+        current_activities = load_activities()
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for act in current_activities.keys():
+            markup.add(types.InlineKeyboardButton(f"🗑 {act}", callback_data=f"delact_{act[:40]}"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="manage_activities"))
+        bot.edit_message_text("اختر النشاط المراد حذفه:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("delact_"):
+        act_to_delete = data.replace("delact_", "")
+        current_activities = load_activities()
+        for key in list(current_activities.keys()):
+            if key.startswith(act_to_delete) or key[:40] == act_to_delete:
+                del current_activities[key]
+                save_activities(current_activities)
+                bot.send_message(chat_id, f"✅ تم حذف النشاط: {key}", reply_markup=main_menu(chat_id))
+                return
+        bot.send_message(chat_id, "❌ لم يتم العثور على النشاط.", reply_markup=main_menu(chat_id))
+
+    elif data == "delete_sub_activity" and is_admin(chat_id):
+        current_activities = load_activities()
+        text = "📋 الأنشطة وتفريعاتها:\n\n"
+        for act, subs in current_activities.items():
+            text += f"🔹 {act}:\n"
+            if subs:
+                for sub in subs:
+                    text += f"   • {sub}\n"
+            else:
+                text += "   (بدون تفريعات)\n"
+        text += "\n✍️ أرسل اسم النشاط الرئيسي ثم فاصلة ثم اسم التفريع المراد حذفه\nمثال: أنشطة الإعلام,تحرير أخباري"
+        msg = bot.send_message(chat_id, text)
+        bot.register_next_step_handler(msg, process_delete_sub_activity)
+
+    elif data == "rename_activity" and is_admin(chat_id):
+        current_activities = load_activities()
+        text = "📋 الأنشطة الرئيسية:\n\n"
+        for i, act in enumerate(current_activities.keys(), 1):
+            text += f"{i}. {act}\n"
+        text += "\n✍️ أرسل رقم النشاط ثم فاصلة ثم الاسم الجديد\nمثال: 1,الاسم الجديد"
+        msg = bot.send_message(chat_id, text)
+        bot.register_next_step_handler(msg, process_rename_activity)
+
+    elif data == "list_all_activities" and is_admin(chat_id):
+        current_activities = load_activities()
+        text = "📋 *جميع الأنشطة والتفريعات:*\n\n"
+        for act, subs in current_activities.items():
+            text += f"🔹 *{act}*\n"
+            if subs:
+                for sub in subs:
+                    text += f"   ◽️ {sub}\n"
+            else:
+                text += "   (بدون تفريعات)\n"
+            text += "\n"
+        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu(chat_id))
+
+
+# --- دوال حفظ الرموز الجديدة ---
+def save_new_admin_password(message):
+    chat_id = message.chat.id
+    passwords = load_passwords()
+    passwords['admin_password'] = message.text.strip()
+    save_passwords(passwords)
+    bot.send_message(chat_id, f"✅ تم تغيير رمز المشرف بنجاح إلى: {message.text.strip()}", reply_markup=main_menu(chat_id))
+
+def save_new_user_password(message):
+    chat_id = message.chat.id
+    passwords = load_passwords()
+    passwords['user_password'] = message.text.strip()
+    save_passwords(passwords)
+    bot.send_message(chat_id, f"✅ تم تغيير رمز المستخدم بنجاح إلى: {message.text.strip()}", reply_markup=main_menu(chat_id))
+
+# --- دوال الخانة المخفية ---
+def save_hidden_note(message):
+    chat_id = message.chat.id
+    conn = sqlite3.connect('archive_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO hidden_notes (admin_id, note, timestamp) VALUES (?, ?, ?)",
+                   (chat_id, message.text, str(datetime.now())))
+    conn.commit()
+    conn.close()
+    bot.send_message(chat_id, "✅ تم حفظ الملاحظة السرية بنجاح!", reply_markup=main_menu(chat_id))
+
+# --- دوال إدارة الأنشطة ---
+def process_add_main_activity(message):
+    chat_id = message.chat.id
+    new_activity = message.text.strip()
+    current_activities = load_activities()
+    
+    if new_activity in current_activities:
+        bot.send_message(chat_id, "❌ هذا النشاط موجود بالفعل!", reply_markup=main_menu(chat_id))
+    else:
+        current_activities[new_activity] = []
+        save_activities(current_activities)
+        bot.send_message(chat_id, f"✅ تم إضافة النشاط الرئيسي: {new_activity}", reply_markup=main_menu(chat_id))
+
+def process_add_sub_activity(message):
+    chat_id = message.chat.id
+    try:
+        parts = message.text.split(",", 1)
+        act_num = int(parts[0].strip()) - 1
+        sub_name = parts[1].strip()
+        
+        current_activities = load_activities()
+        act_keys = list(current_activities.keys())
+        
+        if 0 <= act_num < len(act_keys):
+            current_activities[act_keys[act_num]].append(sub_name)
+            save_activities(current_activities)
+            bot.send_message(chat_id, f"✅ تم إضافة التفريع '{sub_name}' إلى '{act_keys[act_num]}'", reply_markup=main_menu(chat_id))
+        else:
+            bot.send_message(chat_id, "❌ رقم النشاط غير صحيح!", reply_markup=main_menu(chat_id))
+    except:
+        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: رقم,اسم التفريع", reply_markup=main_menu(chat_id))
+
+def process_delete_sub_activity(message):
+    chat_id = message.chat.id
+    try:
+        parts = message.text.split(",", 1)
+        act_name = parts[0].strip()
+        sub_name = parts[1].strip()
+        
+        current_activities = load_activities()
+        
+        if act_name in current_activities and sub_name in current_activities[act_name]:
+            current_activities[act_name].remove(sub_name)
+            save_activities(current_activities)
+            bot.send_message(chat_id, f"✅ تم حذف التفريع '{sub_name}' من '{act_name}'", reply_markup=main_menu(chat_id))
+        else:
+            bot.send_message(chat_id, "❌ لم يتم العثور على النشاط أو التفريع!", reply_markup=main_menu(chat_id))
+    except:
+        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: اسم النشاط,اسم التفريع", reply_markup=main_menu(chat_id))
+
+def process_rename_activity(message):
+    chat_id = message.chat.id
+    try:
+        parts = message.text.split(",", 1)
+        act_num = int(parts[0].strip()) - 1
+        new_name = parts[1].strip()
+        
+        current_activities = load_activities()
+        act_keys = list(current_activities.keys())
+        
+        if 0 <= act_num < len(act_keys):
+            old_name = act_keys[act_num]
+            current_activities[new_name] = current_activities.pop(old_name)
+            save_activities(current_activities)
+            bot.send_message(chat_id, f"✅ تم تغيير اسم النشاط من '{old_name}' إلى '{new_name}'", reply_markup=main_menu(chat_id))
+        else:
+            bot.send_message(chat_id, "❌ رقم النشاط غير صحيح!", reply_markup=main_menu(chat_id))
+    except:
+        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: رقم,الاسم الجديد", reply_markup=main_menu(chat_id))
+
+
+# --- الانتقال لمرحلة رفع المادة المؤرشفة ---
+def goToUploadStage(chat_id, message_id):
+    session = user_sessions[chat_id]
+    text = f"⚙️ *جاهز لاستلام المواد للأرشفة:*\n\n📅 الشهر: {session['month']}\n📌 الأسبوع: {session['week']}\n🗂 النشاط: {session['activity']} ({session.get('sub_activity', '')})\n\n✍️ *فضلاً أرسل الآن نص الخبر أو التقرير، أو أرسل الصورة/الملف مباشرة.*"
+    msg = bot.send_message(chat_id, text, parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_archive_input)
+
+# --- معالجة المدخلات والأرشفة الفعلية ---
+def process_archive_input(message):
+    chat_id = message.chat.id
+    session = user_sessions.get(chat_id, {})
+    
+    if not session or 'month' not in session:
+        bot.send_message(chat_id, "❌ حدث خطأ في الجلسة، يرجى البدء من جديد عبر /start")
         return
 
-    # ==========================================
-    # 🔄 مسار الأرشفة والتصنيف المتطور
-    # ==========================================
-    if data == "ui_archive":
-        markup = types.InlineKeyboardMarkup(row_width=3)
-        buttons = [types.InlineKeyboardButton(f"شهر {i}", callback_data=f"arch_m_{i}") for i in range(1, 13)]
-        markup.add(*buttons)
-        markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة الرئيسية", callback_data="go_home"))
-        bot.edit_message_text("📅 الخطوة [1/3]: يرجى اختيار الشهر الهجري للنشاط المراد توثيقه:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("arch_m_"):
-        session['hijri_month'] = data.split("_")[2]
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        weeks = ["الأسبوع الأول", "الأسبوع الثاني", "الأسبوع الثالث", "الأسبوع الرابع"]
-        for w in weeks:
-            markup.add(types.InlineKeyboardButton(w, callback_data=f"arch_w_{w}"))
-        bot.edit_message_text("📅 الخطوة [1/3]: يرجى تحديد الأسبوع التابع للشهر الهجري المختار:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("arch_w_"):
-        session['hijri_week'] = data.split("_")[2]
-        user_sessions[user_id] = session
-        
-        # جلب الأقسام الرئيسية ديناميكياً من قاعدة البيانات
-        conn = sqlite3.connect('library_archive.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT category FROM activity_types")
-        categories = cursor.fetchall()
-        conn.close()
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for cat in categories:
-            markup.add(types.InlineKeyboardButton(cat[0], callback_data=f"arch_cat_{cat[0]}"))
-            
-        # إظهار الخانة المخفية للمشرف العام والمالك فقط بحسب التوصيف
-        if role == 'owner':
-            markup.add(types.InlineKeyboardButton("🔒 الخانة المخفية (خاص بالمشرف العام)", callback_data="arch_cat_الخانة المخفية"))
-            
-        bot.edit_message_text("🗂️ الخطوة [2/3]: يرجى اختيار نوع النشاط الرئيسي/التصنيف العام للتقرير:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("arch_cat_"):
-        selected_cat = data.replace("arch_cat_", "")
-        session['main_category'] = selected_cat
-        user_sessions[user_id] = session
-        
-        if selected_cat == "الخانة المخفية":
-            session['sub_category'] = "توثيق حساس وسري جداً"
-            user_sessions[user_id] = session
-            ask_for_archive_file(user_id, call.message.message_id)
-            return
-            
-        # جلب التصنيفات الفرعية للقسم المختار ديناميكياً
-        conn = sqlite3.connect('library_archive.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT sub_category FROM activity_types WHERE category=?", (selected_cat,))
-        sub_cats = cursor.fetchall()
-        conn.close()
-        
-        if sub_cats and sub_cats[0][0] != "عام":
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            for sub in sub_cats:
-                markup.add(types.InlineKeyboardButton(sub[0], callback_data=f"arch_sub_{sub[0]}"))
-            bot.edit_message_text(f"🔍 الأنشطة التابعة لـ ({selected_cat}): يرجى تحديد التصنيف الدقيق:", user_id, call.message.message_id, reply_markup=markup)
-        else:
-            session['sub_category'] = "عام"
-            user_sessions[user_id] = session
-            ask_for_archive_file(user_id, call.message.message_id)
-
-    elif data.startswith("arch_sub_"):
-        sub_val = data.replace("arch_sub_", "")
-        session['sub_category'] = sub_val
-        user_sessions[user_id] = session
-        
-        # فحص استثنائي لـ الإعلام الصحفي لطلب رقم الإصدار
-        if sub_val == "الإعلام الصحفي":
-            bot.edit_message_text("✍️ التوثيق للإعلام الصحفي يتطلب كتابة التفاصيل؛ يرجى لاحقاً ذكر (عدد الإصدار) ضمن نص المضمون المرفق.", user_id, call.message.message_id)
-            
-        ask_for_archive_file(user_id, call.message.message_id)
-
-    elif data == "time_auto":
-        session['actual_date'] = datetime.now().strftime("%Y-%m-%d")
-        user_sessions[user_id] = session
-        execute_final_archiving(user_id)
-        
-    elif data == "time_manual":
-        session['step'] = "wait_manual_date"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, "✍️ يرجى إرسال تاريخ اليوم المطلوب أرشفة التقرير فيه بصيغة نصية واضحة (مثال: 2026-07-05):")
-
-    # ==========================================
-    # 🎨 مسار نظام القولبة الذكي والتكامل المطور
-    # ==========================================
-    elif data == "ui_template":
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("🖼️ تقرير مصور بـ (صورة واحدة)", callback_data="tpl_count_1"))
-        markup.add(types.InlineKeyboardButton("👥 تقرير مصور بـ (صورة مزدوجة - صورتين)", callback_data="tpl_count_2"))
-        markup.add(types.InlineKeyboardButton("🎴 تقرير مصور بـ (4 صور في شبكة واحدة)", callback_data="tpl_count_4"))
-        markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة", callback_data="go_home"))
-        bot.edit_message_text("🎨 أهلاً بك في استوديو القولبة الذكي. حدد عدد الصور المراد دمجها وبنائها داخل التقرير المصور الموحد للجهة:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("tpl_count_"):
-        count = int(data.split("_")[2])
-        session['target_photos_count'] = count
-        session['template_photos'] = []
-        session['step'] = "wait_template_photos"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, f"📥 الاستوديو جاهز. يرجى إرسال الصورة الأولى الآن:")
-
-    elif data.startswith("archive_instant_"):
-        # التكامل الفوري للأرشفة التلقائية/اليدوية من زر القالب المصمم
-        file_id = data.replace("archive_instant_", "")
-        session['instant_file_id'] = file_id
-        user_sessions[user_id] = session
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("⚡ الأرشفة التلقائية (تاريخ اليوم والأسبوع الحالي)", callback_data="inst_mode_auto"))
-        markup.add(types.InlineKeyboardButton("🛠️ التخصيص اليدوي (تحديد فترة أو شهر سابق)", callback_data="inst_mode_manual"))
-        bot.send_message(user_id, "📥 معالج الترحيل الفوري للأرشيف: حدد نمط الأرشفة الذي تريده لهذا التصميم الجاهز:", reply_markup=markup)
-
-    elif data == "inst_mode_auto":
-        # حساب التوقيت الحالي تلقائياً وتحديد نوع النشاط فقط
-        session['hijri_month'] = str((datetime.now().month % 12) + 1) # محاكاة تقريبية للشهر الحالي
-        session['hijri_week'] = "الأسبوع الأول"
-        session['actual_date'] = datetime.now().strftime("%Y-%m-%d")
-        user_sessions[user_id] = session
-        
-        # الذهاب لاختيار النشاط مباشرة اختصاراً للوقت
-        conn = sqlite3.connect('library_archive.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT category FROM activity_types")
-        categories = cursor.fetchall()
-        conn.close()
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for cat in categories:
-            markup.add(types.InlineKeyboardButton(cat[0], callback_data=f"arch_cat_{cat[0]}"))
-        bot.send_message(user_id, "📌 التوقيت حُسب تلقائياً. يرجى فقط تحديد نوع النشاط الرئيسي لترحيل الملف فوراً للأرشيف:", reply_markup=markup)
-
-    elif data == "inst_mode_manual":
-        # إعادة توجيه لمسار الأرشفة العادي لكن مع الاحتفاظ بملف التصميم المخزن في الذاكرة
-        bot.send_message(user_id, "🛠️ نمط التخصيص اليدوي نشط. سيتم توجيهك الآن للفهرسة الكاملة:")
-        bot.edit_message_text("📅 اختر الشهر الهجري للتصنييف اليدوي:", user_id, call.message.message_id, reply_markup=build_main_menu(user_id))
-        # تزييف حدث بالدخول للأرشفة للبدء من جديد مع الحفاظ على البيانات
-        call.data = "ui_archive"
-        handle_callback_queries(call)
-
-    # ==========================================
-    # 📊 مسار التقارير الإحصائية والاسترجاع
-    # ==========================================
-    elif data == "ui_stats":
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("📈 توليد وتصدير ملف Excel إحصائي شامل لشهر هجري", callback_data="st_export_excel"))
-        markup.add(types.InlineKeyboardButton("🔍 محرك البحث والاسترجاع باليوم المحدد", callback_data="st_search_day"))
-        markup.add(types.InlineKeyboardButton("🔎 محرك البحث والاسترجاع بالأسبوع الكامل", callback_data="st_search_week"))
-        markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة الرئيسية", callback_data="go_home"))
-        bot.edit_message_text("📊 قسم التقارير والاسترجاع الذكي؛ حدد الإجراء المطلوب عمله الآن من قاعدة البيانات:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data == "st_export_excel":
-        markup = types.InlineKeyboardMarkup(row_width=3)
-        buttons = [types.InlineKeyboardButton(f"شهر {i}", callback_data=f"run_excel_{i}") for i in range(1, 13)]
-        markup.add(*buttons)
-        bot.edit_message_text("📊 اختر الشهر الهجري المطلوب تصدير وإخراج الحصاد والإحصائيات الخاصة به كملف Excel مدمج ومجدول:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("run_excel_"):
-        m_target = data.split("_")[2]
-        generate_excel_statistics(user_id, m_target)
-
-    elif data == "st_search_day":
-        session['step'] = "wait_search_day"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, "🔍 يرجى إرسال تاريخ اليوم المراد البحث عنه واسترجاع ملفاته (مثال: 2026-07-05):")
-
-    elif data == "st_search_week":
-        session['step'] = "wait_search_week"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, "🔎 يرجى إرسال أي تاريخ يقع ضمن الأسبوع المطلوب، وسيتعرف النظام عليه ويسحب توثيقات الأسبوع كاملة تلقائياً:")
-
-    # ==========================================
-    # ⚙️ لوحة الإدارة والمشرفين والرقابة المطلقة
-    # ==========================================
-    elif data == "admin_main" and role in ['owner', 'admin']:
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("📈 تقرير أداء المستخدمين وقياس الالتزام (Excel)", callback_data="adm_perf_report"))
-        
-        # صلاحيات المالك الحصرية والمطلقة فقط بحسب التوصيف الفني لبناء البوت
-        if role == 'owner':
-            markup.add(types.InlineKeyboardButton("➕ إضافة قسم/نشاط جديد للشجرة", callback_data="adm_add_cat"))
-            markup.add(types.InlineKeyboardButton("👤 ترقية مستخدم إلى رتبة مشرف جديد", callback_data="adm_add_admin"))
-            markup.add(types.InlineKeyboardButton("🚫 حظر حساب موظف مقصر من النظام", callback_data="adm_ban_user"))
-            markup.add(types.InlineKeyboardButton("🔐 تحديث وتغيير الرموز السرية للمنظومة", callback_data="adm_change_passes"))
-            
-        markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة الرئيسية", callback_data="go_home"))
-        bot.edit_message_text("⚙️ لوحة تحكم الإدارة والرقابة المركزية. حدد الخيار الإداري المطلوب تنفيذه:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data == "adm_perf_report":
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(types.InlineKeyboardButton("📆 تقرير الالتزام الأسبوعي", callback_data="perf_calc_week"))
-        markup.add(types.InlineKeyboardButton("📅 تقرير الالتزام الشهري", callback_data="perf_calc_month"))
-        bot.edit_message_text("📊 حدد النطاق الرقابي المطلوب لبناء جدول قياس الالتزام والنسب المئوية لحصاد الموظفين:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("perf_calc_"):
-        mode = data.replace("perf_calc_", "")
-        generate_user_performance_excel(user_id, mode)
-
-    elif data == "adm_add_cat" and role == 'owner':
-        session['step'] = "wait_new_cat"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, "✍️ يرجى إرسال اسم القسم الرئيسي متبوعاً بشرطة ثم التصنيف الفرعي المراد إضافته لشجرة الأزرار.\n\nمثال:\nالأنشطة الهندسية - فحص وصيانة شبكات وتمديدات")
-
-    elif data == "adm_change_passes" and role == 'owner':
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔑 تعديل رمز الأعضاء/المستخدمين", callback_data="pass_mod_user"))
-        markup.add(types.InlineKeyboardButton("👑 تعديل رمز الملاك والمشرفين", callback_data="pass_mod_admin"))
-        bot.edit_message_text("🔐 اختر الرمز الأمني المراد إدخال تعديل فوري عليه لحماية المنظومة:", user_id, call.message.message_id, reply_markup=markup)
-
-    elif data == "pass_mod_user" and role == 'owner':
-        session['step'] = "wait_new_user_pass"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, "✍️ أرسل الآن الرمز السري الجديد المخصص لدخول المستخدمين والعاملين:")
-
-    elif data == "pass_mod_admin" and role == 'owner':
-        session['step'] = "wait_new_admin_pass"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, "✍️ أرسل الآن الرمز السري الجديد المخصص لدخول الملاك والمشرفين:")
-
-    elif data == "adm_add_admin" and role == 'owner':
-        session['step'] = "wait_add_admin_id"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, "👤 يرجى إرسال المعرف الرقمي (User ID) للشخص المراد ترقيته فوراً لرتبة مشرف عادي:")
-
-    elif data == "adm_ban_user" and role == 'owner':
-        session['step'] = "wait_ban_user_id"
-        user_sessions[user_id] = session
-        bot.send_message(user_id, "🚫 يرجى إرسال المعرف الرقمي (User ID) للحساب المطلوب حظره وطرده نهائياً من الصلاحيات:")
-
-# --- دالة مساعدة لطلب إرسال الملف في الأرشفة ---
-def ask_for_archive_file(user_id, message_id):
-    session = user_sessions[user_id]
-    session['step'] = "wait_archive_file"
-    user_sessions[user_id] = session
-    
-    details = f"📅 الشهر: {session['hijri_month']} | 📌 الأسبوع: {session['hijri_week']}\n🗂️ التصنيف العام: {session['main_category']}\n🔍 الفرع: {session['sub_category']}"
-    bot.send_message(user_id, f"📥 *المسار مهيأ وجاهز لاستقبال التقارير والوثائق:*\n\n{details}\n\nيرجى الآن رفع المادة المطلوبة (سواء كانت رسالة نصية، صورة مفردة، مقطع فيديو، أو مستند بأي صيغة كانت).", parse_mode="Markdown")
-
-# --- دالة التنفيذ النهائي والادخال الفعلي للأرشيف الماستر ---
-def execute_final_archiving(user_id):
-    session = user_sessions.get(user_id, {})
-    msg = session.get('msg_content')
-    
-    # التحقق مما إذا كانت الأرشفة قادمة من زر التكامل الفوري لنظام القولبة الجاهز
-    is_instant = 'instant_file_id' in session
-    
-    content_type = "نص"
+    content_type = ""
     content_data = ""
     file_id = ""
-    username = "غير معروف"
-    
-    if is_instant:
-        content_type = "صورة مقولبة جاهزة"
-        file_id = session['instant_file_id']
-        content_data = "تقرير مصور ومقوْلب تم توليده وترحيله عبر النظام الفوري للبوت."
-        conn = sqlite3.connect('library_archive.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT username FROM members WHERE user_id=?", (user_id,))
-        res = cursor.fetchone()
-        if res: username = res[0]
-        conn.close()
-    else:
-        username = msg.from_user.username if msg.from_user.username else "لا يوجد"
-        if msg.content_type == 'text':
-            content_type = "نص"
-            content_data = msg.text
-        elif msg.content_type == 'photo':
-            content_type = "صورة"
-            content_data = msg.caption if msg.caption else "تقرير مصور بدون تعليق نصي"
-            file_id = msg.photo[-1].file_id
-        elif msg.content_type == 'video':
-            content_type = "فيديو"
-            content_data = msg.caption if msg.caption else "توثيق مرئي/فيديو"
-            file_id = msg.video.file_id
-        elif msg.content_type == 'document':
-            content_type = "مستند/ملف"
-            content_data = msg.caption if msg.caption else msg.document.file_name
-            file_id = msg.document.file_id
 
-    # الحفظ النهائي في قاعدة بيانات الأرشيف العام
-    conn = sqlite3.connect('library_archive.db')
+    if message.content_type == 'text':
+        content_type = "نص / خبر"
+        content_data = message.text
+    elif message.content_type == 'photo':
+        content_type = "صورة"
+        content_data = message.caption if message.caption else "صورة بدون نص"
+        file_id = message.photo[-1].file_id
+    elif message.content_type == 'video':
+        content_type = "فيديو"
+        content_data = message.caption if message.caption else "فيديو بدون نص"
+        file_id = message.video.file_id
+    elif message.content_type == 'document':
+        content_type = "ملف / مستند"
+        content_data = message.caption if message.caption else "ملف بدون نص"
+        file_id = message.document.file_id
+    else:
+        bot.send_message(chat_id, "❌ نوع الملف غير مدعوم حالياً.")
+        return
+
+    # حفظ في قاعدة البيانات
+    conn = sqlite3.connect('archive_bot.db')
     cursor = conn.cursor()
-    cursor.execute('''INSERT INTO archive_master 
-                      (user_id, username, hijri_month, hijri_week, main_category, sub_category, content_type, content_data, file_id, actual_date, timestamp) 
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                   (user_id, username, session['hijri_month'], session['hijri_week'], session['main_category'], session['sub_category'], content_type, content_data, file_id, session['actual_date'], str(datetime.now())))
+    cursor.execute('''
+        INSERT INTO archive (user_id, username, month, week, activity, content_type, content_data, file_id, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (chat_id, message.from_user.username, session['month'], session['week'],
+          f"{session['activity']} - {session.get('sub_activity','')}", content_type, content_data, file_id, str(datetime.now())))
     conn.commit()
-    
-    # جلب المشرفين لإرسال إشعارات فورية لهم بحسب الرقابة الصارمة للمنظومة
-    cursor.execute("SELECT user_id FROM members WHERE role IN ('owner', 'admin')")
-    admins = cursor.fetchall()
     conn.close()
-    
-    bot.send_message(user_id, "✅ تم أرشفة المادة وفهرستها بنجاح داخل قاعدة البيانات المركزية للمكتبة الإلكترونية.", reply_markup=build_main_menu(user_id))
-    
-    # بث الإشعار الفوري للمشرفين
-    for adm in admins:
-        try:
-            alert = f"🔔 *إشعار رقابي بأرشفة مادة جديدة:*\n\n👤 الموظف: @{username}\n📅 الفترة: شهر {session['hijri_month']} - {session['hijri_week']}\n🗂️ التصنيف: {session['main_category']} -> {session['sub_category']}\n⏱️ التاريخ الفعلي المعتمد: {session['actual_date']}"
-            bot.send_message(adm[0], alert, parse_mode="Markdown")
-        except:
-            pass
-            
-    # تصفير الجلسة تماماً
-    user_sessions[user_id] = {}
 
-# =====================================================================
-# 📊 نظام تصدير البيانات إلى ملفات Excel الذكية (الإحصائيات والالتزام)
-# =====================================================================
-def generate_excel_statistics(user_id, month):
-    conn = sqlite3.connect('library_archive.db')
-    query = "SELECT hijri_week, main_category, sub_category, content_type, actual_date, username FROM archive_master WHERE hijri_month=?"
-    df = pd.read_sql_query(query, conn, params=(month,))
-    conn.close()
-    
-    if df.empty:
-        bot.send_message(user_id, f"📭 لا توجد أي بيانات مؤرشفة لشهر {month} لتوليد التقارير الإحصائية المجدولة لها.")
-        return
-        
-    filename = f"حصاد_إحصائي_شهر_{month}.xlsx"
-    
-    # إنشاء وحفظ ملف الإكسل المجدول والمنسق تلقائياً عبر Pandas
-    with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='السجل التفصيلي العام', index=False)
-        
-        # إنشاء جدول محوري إحصائي يوضح أداء وحصاد كل أسبوع للأنشطة المختلفة بشكل منظم
-        summary = df.groupby(['hijri_week', 'main_category']).size().reset_index(name='إجمالي التوثيقات المرفوعة')
-        summary.to_excel(writer, sheet_name='الملخص الإحصائي المجمع', index=False)
-        
-    with open(filename, 'rb') as file:
-        bot.send_document(user_id, file, caption=f"📊 التقرير الإحصائي وجدول الحصاد الشامل المعتمد لشهر هجري ({month}) بصيغة Excel الجاهزة للطباعة الإدارية.")
-    os.remove(filename)
+    bot.send_message(chat_id, "✅ تم حفظ التوثيق وأرشفته بنجاح!", reply_markup=main_menu(chat_id))
 
-def generate_user_performance_excel(admin_id, mode):
-    conn = sqlite3.connect('library_archive.db')
-    # جلب جميع المستخدمين المسجلين في النظام
-    users_df = pd.read_sql_query("SELECT user_id, username FROM members WHERE role='user'", conn)
-    archive_df = pd.read_sql_query("SELECT user_id, hijri_week, hijri_month FROM archive_master", conn)
-    conn.close()
-    
-    if users_df.empty:
-        bot.send_message(admin_id, "❌ لا يوجد مستخدمين مسجلين بالنظام حالياً لقياس كفاءة أداء التزامهم.")
-        return
-        
-    perf_data = []
-    
-    if mode == "week":
-        weeks = ["الأسبوع الأول", "الأسبوع الثاني", "الأسبوع الثالث", "الأسبوع الرابع"]
-        for _, u in users_df.iterrows():
-            row = {"اسم المستخدم": f"@{u['username']}"}
-            total_score = 0
-            for w in weeks:
-                # الفحص والتدقيق: هل يمتلك الشخص على الأقل مرفوعاً واحداً في هذا الأسبوع؟
-                has_uploaded = archive_df[(archive_df['user_id'] == u['user_id']) & (archive_df['hijri_week'] == w)]
-                score = 1 if not has_uploaded.empty else 0
-                row[w] = score
-                total_score += score
-            row["إجمالي المرفوعات الملتزم بها"] = total_score
-            row["نسبة الالتزام والتقييم"] = f"{(total_score / 4) * 100}%"
-            perf_data.append(row)
-    else:
-        # التقييم والرقابة على النطاق الشهري للأشهر الـ 12 هجرية
-        for _, u in users_df.iterrows():
-            row = {"اسم المستخدم": f"@{u['username']}"}
-            total_score = 0
-            for m in range(1, 13):
-                has_uploaded = archive_df[(archive_df['user_id'] == u['user_id']) & (archive_df['hijri_month'] == str(m))]
-                score = 1 if not has_uploaded.empty else 0
-                row[f"شهر {m}"] = score
-                total_score += score
-            row["إجمالي الأشهر الملتزم بها"] = total_score
-            row["نسبة الالتزام والتقييم الشهري"] = f"{(total_score / 12) * 100:.1f}%"
-            perf_data.append(row)
-            
-    final_perf_df = pd.DataFrame(perf_data)
-    fn = f"جدول_الالتزام_ورقابة_الأداء_{mode}.xlsx"
-    final_perf_df.to_excel(fn, index=False)
-    
-    with open(fn, 'rb') as f:
-        bot.send_document(admin_id, f, caption=f"📈 كشف تقييم الأداء ومصفوفة نسب الالتزام الدورية للعاملين والموثقين بالمنظومة بنمط الحساب التلقائي (1 ملتزم، 0 غائب ومقصر).")
-    os.remove(fn)
+    # إشعار فوري للمشرفين
+    for uid, role in authenticated_users.items():
+        if role == "admin" and uid != chat_id:
+            try:
+                admin_msg = f"🔔 *إشعار أرشفة جديد:*\n👤 بواسطة: @{message.from_user.username}\n📅 الشهر: {session['month']} | {session['week']}\n🗂 النوع: {session['activity']}\n📄 المادة: {content_type}"
+                bot.send_message(uid, admin_msg, parse_mode="Markdown")
+            except Exception:
+                pass
 
-# =====================================================================
-# 🔍 محرك استعراض وتنزيل الملفات الذكي
-# =====================================================================
-def fetch_and_send_archive_by_time(user_id, type_search, value_search):
-    conn = sqlite3.connect('library_archive.db')
+
+# --- نظام التقارير الإحصائية الشهرية ---
+def generate_statistics(chat_id, month):
+    conn = sqlite3.connect('archive_bot.db')
     cursor = conn.cursor()
     
-    if type_search == "day":
-        cursor.execute("SELECT content_type, content_data, file_id, main_category, username FROM archive_master WHERE actual_date=?", (value_search,))
-    else:
-        # الاسترجاع بالأسبوع الكامل: قراءة التاريخ والبحث عنه في أي سجل يطابق نفس الشهر والاسبوع المسجلين في هذا التاريخ
-        cursor.execute("SELECT hijri_month, hijri_week FROM archive_master WHERE actual_date=?", (value_search,))
-        res_match = cursor.fetchone()
-        if res_match:
-            cursor.execute("SELECT content_type, content_data, file_id, main_category, username FROM archive_master WHERE hijri_month=? AND hijri_week=?", res_match)
-        else:
-            conn.close()
-            bot.send_message(user_id, "📭 لم يتم العثور على أي ملفات مؤرشفة مسجلة في التواريخ التابعة لهذا النطاق الزمني.")
-            user_sessions[user_id] = {}
-            return
-            
+    report = f"📊 *التقرير الإحصائي الشهري لشهر ({month}):*\n\n"
+    total_month = 0
+    
+    for week in WEEKS:
+        cursor.execute("SELECT COUNT(*) FROM archive WHERE month=? AND week=?", (month, week))
+        total_week = cursor.fetchone()[0]
+        total_month += total_week
+        report += f"🔹 *{week}:* إجمالي التوثيقات ({total_week} مادة)\n"
+        
+        cursor.execute("SELECT activity, COUNT(*) FROM archive WHERE month=? AND week=? GROUP BY activity", (month, week))
+        activities_count = cursor.fetchall()
+        for act, count in activities_count:
+            report += f"  ◽️ {act}: {count}\n"
+        report += "— — — — — — — — —\n"
+    
+    report += f"\n📌 *إجمالي الشهر:* {total_month} مادة مؤرشفة"
+    conn.close()
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة", callback_data="main_menu"))
+    bot.send_message(chat_id, report, parse_mode="Markdown", reply_markup=markup)
+
+
+# --- تقارير الفترات (ربع سنوي / نصف سنوي / سنوي) ---
+def generate_period_statistics(chat_id, months_list, period_name):
+    conn = sqlite3.connect('archive_bot.db')
+    cursor = conn.cursor()
+    
+    report = f"📊 *تقرير {period_name}:*\n\n"
+    grand_total = 0
+    
+    for month in months_list:
+        cursor.execute("SELECT COUNT(*) FROM archive WHERE month=?", (month,))
+        total = cursor.fetchone()[0]
+        grand_total += total
+        report += f"🔹 {month}: {total} مادة\n"
+    
+    report += f"\n📌 *الإجمالي الكلي:* {grand_total} مادة مؤرشفة"
+    conn.close()
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة", callback_data="main_menu"))
+    bot.send_message(chat_id, report, parse_mode="Markdown", reply_markup=markup)
+
+
+# --- محرك سحب البيانات للمشرفين ---
+def pull_data_for_admin(admin_id, month, week):
+    conn = sqlite3.connect('archive_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, activity, content_type, content_data, file_id FROM archive WHERE month=? AND week=?", (month, week))
     rows = cursor.fetchall()
     conn.close()
-    
+
     if not rows:
-        bot.send_message(user_id, "📭 لم يتم العثور على أي ملفات مؤرشفة مسجلة في التواريخ التابعة لهذا النطاق الزمني.")
-        user_sessions[user_id] = {}
+        bot.send_message(admin_id, f"📭 لا توجد أي بيانات مؤرشفة لشهر {month} - {week}.", reply_markup=main_menu(admin_id))
         return
-        
-    bot.send_message(user_id, f"📦 جاري تنزيل وسحب التوثيقات التي تم العثور عليها ومطابقتها بالنظام والبالغ عددها ({len(rows)})... يرجى الانتظار:")
+
+    bot.send_message(admin_id, f"📦 جاري سحب البيانات لشهر *{month}* (*{week}*)...", parse_mode="Markdown")
     
-    for r in rows:
-        c_type, c_data, file_id, main_cat, creator = r
-        cap = f"📁 القسم: {main_cat}\n👤 الموثق: @{creator}\n📝 المضمون/التعليق: {c_data}"
+    for row in rows:
+        username, activity, c_type, c_data, file_id = row
+        caption_text = f"👤 الموثق: @{username}\n🗂 النشاط: {activity}\n📝 المضمون: {c_data}"
         
-        if c_type == "نص":
-            bot.send_message(user_id, f"📄 *[تقرير نصي محفوظ]*\n\n{cap}", parse_mode="Markdown")
-        elif c_type in ["صورة", "صورة مقولبة جاهزة"]:
-            bot.send_photo(user_id, file_id, caption=cap)
+        if file_id == "":
+            bot.send_message(admin_id, f"📄 *[نص مؤرشف]*\n{caption_text}", parse_mode="Markdown")
+        elif c_type == "صورة":
+            bot.send_photo(admin_id, file_id, caption=caption_text)
         elif c_type == "فيديو":
-            bot.send_video(user_id, file_id, caption=cap)
-        elif c_type == "مستند/ملف":
-            bot.send_document(user_id, file_id, caption=cap)
-            
-    user_sessions[user_id] = {}
+            bot.send_video(admin_id, file_id, caption=caption_text)
+        elif c_type == "ملف / مستند":
+            bot.send_document(admin_id, file_id, caption=caption_text)
 
-# =====================================================================
-# 🎨 نظام القولبة الذكي وتوليد تقارير الـ Grid الشبكية
-# =====================================================================
-def process_and_generate_template(user_id):
-    session = user_sessions[user_id]
-    photos_list = session['template_photos']
-    text_to_write = session['template_text']
-    
-    bot.send_message(user_id, "⏳ جاري تحميل الصور المرفوعة ومعالجتها وتركيبها داخل القالب الرسمي للجهة وتنسيق الخطوط العربي...")
-    
-    downloaded_paths = []
-    for idx, f_id in enumerate(photos_list):
-        f_info = bot.get_file(f_id)
-        downloaded = bot.download_file(f_info.file_path)
-        path = f"tmp_img_{user_id}_{idx}.jpg"
-        with open(path, 'wb') as f:
-            f.write(downloaded)
-        downloaded_paths.append(path)
-        
-    try:
-        # إنشاء اللوحة الفنية الأساسية (Canvas) بمقاس افتراضي ثابت للتقارير الفاخرة (1200x1200) بكسل
-        canvas_w, canvas_h = 1200, 1350
-        output_image = Image.new("RGB", (canvas_w, canvas_h), "white")
-        draw = ImageDraw.Draw(output_image)
-        
-        # فتح وتجهيز الصور وتصغير أحجامها لتتلاءم مع النطاق الشبكي (Grid Setup)
-        opened_images = [Image.open(p) for p in downloaded_paths]
-        
-        if len(opened_images) == 1:
-            # صورة واحدة تغطي مساحة النصف العلوي بامتياز
-            img_resized = opened_images[0].resize((1100, 750), Image.Resampling.LANCZOS)
-            output_image.paste(img_resized, (50, 50))
-            
-        elif len(opened_images) == 2:
-            # صورتين بجانب بعضهما البعض
-            img1 = opened_images[0].resize((540, 750), Image.Resampling.LANCZOS)
-            img2 = opened_images[1].resize((540, 750), Image.Resampling.LANCZOS)
-            output_image.paste(img1, (50, 50))
-            output_image.paste(img2, (610, 50))
-            
-        elif len(opened_images) == 4:
-            # أربعة صور مصفوفة في شبكة هيدروليكية كاملة (2x2)
-            img1 = opened_images[0].resize((540, 360), Image.Resampling.LANCZOS)
-            img2 = opened_images[1].resize((540, 360), Image.Resampling.LANCZOS)
-            img3 = opened_images[2].resize((540, 360), Image.Resampling.LANCZOS)
-            img4 = opened_images[3].resize((540, 360), Image.Resampling.LANCZOS)
-            
-            output_image.paste(img1, (50, 50))
-            output_image.paste(img2, (610, 50))
-            output_image.paste(img3, (50, 440))
-            output_image.paste(img4, (610, 440))
+    bot.send_message(admin_id, "✨ تم سحب جميع البيانات بنجاح.", reply_markup=main_menu(admin_id))
 
-        # طباعة نص التقرير المكتوب أسفل الصور
-        # ملاحظة: يمكنك تحميل ملف خط عربي مثل Arial أو Amiri ووضعه في السيرفر لتنسيقه
-        try:
-            font = ImageFont.truetype("arial.ttf", 36)
-        except:
-            font = ImageFont.load_default()
-            
-        # رسم منطقة للكتابة بحدود وهوامش آمنة
-        text_y_position = 880 if len(opened_images) < 4 else 850
-        
-        # كتابة النص المكتوب بأسلوب يراعي التفاف النص التلقائي البسيط
-        draw.text((60, text_y_position), f"المضمون الإخباري والتوثيقي للنشاط:\n{text_to_write}", fill="black", font=font)
-        
-        # في حال وجود ملف شعار للجهة باسم logo.png يتم تركيبه تلقائياً كعلامة مائية احترافية متكاملة
-        if os.path.exists("logo.png"):
-            logo = Image.open("logo.png").convert("RGBA")
-            logo = logo.resize((150, 150), Image.Resampling.LANCZOS)
-            output_image.paste(logo, (1000, canvas_h - 180), mask=logo)
-            
-        output_filename = f"final_template_{user_id}.jpg"
-        output_image.save(output_filename, "JPEG")
-        
-        # إرسال الصورة النهائية والمنسقة للمستخدم ومرفق بها زر التكامل والترحيل للأرشيف
-        with open(output_filename, 'rb') as ready_photo:
-            sent_msg = bot.send_photo(user_id, ready_photo, caption="✨ تم توليد وبناء قالب التصميم التوثيقي الموحد للجهة بنجاح وبشكل فوري.")
-            
-            # زر ذكي تفاعلي أسفل المادة يحتوي على المعرف الرقمي للملف المولد لترحيله بكبسة زر واحدة
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("📥 [ إرسال هذه المادة الجاهزة إلى الأرشيف العام ]", callback_data=f"archive_instant_{sent_msg.photo[-1].file_id}"))
-            markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة الرئيسية", callback_data="go_home"))
-            bot.send_message(user_id, "⚙️ يمكنك الآن ترحيل هذا القالب مباشرة للأرشيف العام من هنا للفهرسة الحية:", reply_markup=markup)
-            
-        os.remove(output_filename)
-    except Exception as e:
-        bot.send_message(user_id, f"❌ حدث خطأ غير متوقع أثناء معالجة الصور وبناء القالب: {str(e)}")
-        
-    # تنظيف وتفريغ الملفات المؤقتة من السيرفر فوراً
-    for p in downloaded_paths:
-        if os.path.exists(p): os.remove(p)
 
-# --- بدء تشغيل البوت وحث خوادم تليجرام على الإنصات الفوري الطويل ---
+# --- تشغيل البوت ---
 if __name__ == '__main__':
-    print("⚡ منظومة المكتبة الإلكترونية للأرشفة والقولبة تعمل الآن على السيرفر المركزي...")
+    print("⚡ بوت الأرشفة يعمل الآن...")
     bot.infinity_polling()
