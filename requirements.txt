@@ -1,1 +1,4 @@
 pyTelegramBotAPI
+arabic-reshaper
+python-bidi
+Pillow

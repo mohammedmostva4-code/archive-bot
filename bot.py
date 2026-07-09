@@ -4,9 +4,10 @@ import sqlite3
 import os
 import json
 from datetime import datetime
+from image_processor import process_template
 
 # --- الإعدادات الأساسية ---
-API_TOKEN = '8951535425:AAHUWdQgR36yjvIq-6NdUt1sIDrreYXGAuE'
+API_TOKEN = '8951535425:AAHUWdQgR36yjvIq-6NdUt1sIDreYXGAuE'
 bot = telebot.TeleBot(API_TOKEN)
 
 # --- ملف حفظ الرموز ---
@@ -125,9 +126,11 @@ def main_menu(user_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_archive = types.InlineKeyboardButton("📁 البدء في الأرشفة والتصنيف", callback_data="start_archive")
     btn_stats = types.InlineKeyboardButton("📊 التقارير الإحصائية", callback_data="view_stats")
+    btn_template = types.InlineKeyboardButton("🖼 قالب وجد أثر العمل", callback_data="template_start")
     
     markup.add(btn_archive)
     markup.add(btn_stats)
+    markup.add(btn_template)
     
     if is_admin(user_id):
         btn_admin = types.InlineKeyboardButton("👑 لوحة تحكم المشرفين", callback_data="admin_panel")
@@ -204,6 +207,11 @@ def callback_listener(call):
         user_sessions[chat_id] = {}
         bot.edit_message_text("الرجاء اختيار القسم المطلوب من القائمة أدناه:", chat_id, call.message.message_id, reply_markup=main_menu(chat_id))
         
+    # --- مسار القالب الجديد (وجد أثر العمل) ---
+    elif data == "template_start":
+        user_sessions[chat_id] = {'mode': 'template', 'images': [], 'title': '', 'details': ''}
+        bot.edit_message_text("🖼 *مرحباً بك في خدمة قالب وجد أثر العمل*\n\n📸 فضلاً أرسل الآن 4 صور للنشاط (واحدة تلو الأخرى أو دفعة واحدة).", chat_id, call.message.message_id, parse_mode="Markdown")
+
     # --- مسار الأرشفة ---
     elif data == "start_archive":
         markup = types.InlineKeyboardMarkup(row_width=3)
@@ -320,184 +328,203 @@ def callback_listener(call):
             1: ["محرم", "صفر", "ربيع الأول", "ربيع الآخر", "جمادى الأولى", "جمادى الآخرة"],
             2: ["رجب", "شعبان", "رمضان", "شوال", "ذو القعدة", "ذو الحجة"]
         }
-        generate_period_statistics(chat_id, halves[half_num], f"النصف {'الأول' if half_num == 1 else 'الثاني'}")
+        generate_period_statistics(chat_id, halves[half_num], f"النصف {half_num}")
 
     elif data == "stat_yearly":
-        generate_period_statistics(chat_id, MONTHS, "السنة الكاملة")
+        generate_period_statistics(chat_id, MONTHS, "السنوي")
 
-    # --- مسار المشرفين (سحب البيانات) ---
-    elif data == "admin_panel" and is_admin(chat_id):
-        markup = types.InlineKeyboardMarkup(row_width=3)
-        buttons = [types.InlineKeyboardButton(m, callback_data=f"pullm_{m}") for m in MONTHS]
-        markup.add(*buttons)
+    # --- لوحة تحكم المشرفين ---
+    elif data == "admin_panel":
+        if not is_admin(chat_id): return
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("📥 سحب بيانات (شهر/أسبوع)", callback_data="admin_pull_select"))
         markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
-        bot.edit_message_text("👑 لوحة سحب البيانات - اختر الشهر:", chat_id, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text("👑 لوحة تحكم المشرفين:", chat_id, call.message.message_id, reply_markup=markup)
 
-    elif data.startswith("pullm_"):
-        user_sessions[chat_id]['pull_month'] = data.replace("pullm_", "")
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        buttons = [types.InlineKeyboardButton(w, callback_data=f"pullw_{w}") for w in WEEKS]
+    elif data == "admin_pull_select":
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        buttons = [types.InlineKeyboardButton(m, callback_data=f"pullmonth_{m}") for m in MONTHS]
         markup.add(*buttons)
         markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="admin_panel"))
-        bot.edit_message_text("👑 اختر الأسبوع لسحب البيانات:", chat_id, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text("اختر الشهر لسحب بياناته:", chat_id, call.message.message_id, reply_markup=markup)
 
-    elif data.startswith("pullw_"):
-        pull_week = data.replace("pullw_", "")
-        pull_month = user_sessions[chat_id].get('pull_month', '')
-        pull_data_for_admin(chat_id, pull_month, pull_week)
+    elif data.startswith("pullmonth_"):
+        user_sessions[chat_id]['pull_month'] = data.replace("pullmonth_", "")
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        buttons = [types.InlineKeyboardButton(w, callback_data=f"pullweek_{w}") for w in WEEKS]
+        markup.add(*buttons)
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="admin_pull_select"))
+        bot.edit_message_text(f"الشهر: {user_sessions[chat_id]['pull_month']}\nحدد الأسبوع:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("pullweek_"):
+        week = data.replace("pullweek_", "")
+        pull_data_for_admin(chat_id, user_sessions[chat_id]['pull_month'], week)
+
+    # --- إدارة الأنشطة ---
+    elif data == "manage_activities":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("➕ إضافة نشاط رئيسي", callback_data="add_main_act"))
+        markup.add(types.InlineKeyboardButton("➕ إضافة تفريع لنشاط", callback_data="add_sub_act"))
+        markup.add(types.InlineKeyboardButton("❌ حذف تفريع", callback_data="del_sub_act"))
+        markup.add(types.InlineKeyboardButton("📝 تغيير اسم نشاط", callback_data="rename_act"))
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
+        bot.edit_message_text("📝 إدارة الأنشطة:", chat_id, call.message.message_id, reply_markup=markup)
+
+    elif data == "add_main_act":
+        msg = bot.edit_message_text("✍️ أرسل اسم النشاط الرئيسي الجديد:", chat_id, call.message.message_id)
+        bot.register_next_step_handler(msg, process_add_main_activity)
+
+    elif data == "add_sub_act":
+        current_activities = load_activities()
+        text = "اختر رقم النشاط المراد الإضافة إليه ثم أرسل (الرقم,اسم التفريع):\n\n"
+        for i, act in enumerate(current_activities.keys()):
+            text += f"{i+1}. {act}\n"
+        msg = bot.edit_message_text(text, chat_id, call.message.message_id)
+        bot.register_next_step_handler(msg, process_add_sub_activity)
+
+    elif data == "del_sub_act":
+        msg = bot.edit_message_text("✍️ أرسل (اسم النشاط الرئيسي,اسم التفريع) لحذفه:", chat_id, call.message.message_id)
+        bot.register_next_step_handler(msg, process_delete_sub_activity)
+
+    elif data == "rename_act":
+        current_activities = load_activities()
+        text = "اختر رقم النشاط المراد تعديله ثم أرسل (الرقم,الاسم الجديد):\n\n"
+        for i, act in enumerate(current_activities.keys()):
+            text += f"{i+1}. {act}\n"
+        msg = bot.edit_message_text(text, chat_id, call.message.message_id)
+        bot.register_next_step_handler(msg, process_rename_activity)
 
     # --- تغيير الرموز ---
-    elif data == "change_passwords" and is_admin(chat_id):
+    elif data == "change_passwords":
         markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("🔑 تغيير رمز المشرف", callback_data="change_admin_pass"))
-        markup.add(types.InlineKeyboardButton("🔑 تغيير رمز المستخدم", callback_data="change_user_pass"))
+        markup.add(types.InlineKeyboardButton("🔑 تغيير رمز المشرف", callback_data="cp_admin"))
+        markup.add(types.InlineKeyboardButton("🔑 تغيير رمز المستخدم", callback_data="cp_user"))
         markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
-        
-        current_passwords = load_passwords()
-        bot.edit_message_text(
-            f"🔑 إدارة الرموز:\n\n👑 رمز المشرف الحالي: {current_passwords['admin_password']}\n👤 رمز المستخدم الحالي: {current_passwords['user_password']}\n\nاختر الرمز المراد تغييره:",
-            chat_id, call.message.message_id, reply_markup=markup
-        )
+        bot.edit_message_text("🔑 اختر الرمز المراد تغييره:", chat_id, call.message.message_id, reply_markup=markup)
 
-    elif data == "change_admin_pass" and is_admin(chat_id):
-        msg = bot.send_message(chat_id, "✍️ أدخل رمز المشرف الجديد:")
-        bot.register_next_step_handler(msg, save_new_admin_password)
+    elif data == "cp_admin":
+        msg = bot.edit_message_text("✍️ أرسل رمز المشرف الجديد:", chat_id, call.message.message_id)
+        bot.register_next_step_handler(msg, lambda m: update_password(m, 'admin_password'))
 
-    elif data == "change_user_pass" and is_admin(chat_id):
-        msg = bot.send_message(chat_id, "✍️ أدخل رمز المستخدم الجديد:")
-        bot.register_next_step_handler(msg, save_new_user_password)
+    elif data == "cp_user":
+        msg = bot.edit_message_text("✍️ أرسل رمز المستخدم الجديد:", chat_id, call.message.message_id)
+        bot.register_next_step_handler(msg, lambda m: update_password(m, 'user_password'))
 
     # --- الخانة المخفية ---
-    elif data == "hidden_section" and is_admin(chat_id):
+    elif data == "hidden_section":
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(types.InlineKeyboardButton("📝 إضافة ملاحظة سرية", callback_data="add_hidden_note"))
-        markup.add(types.InlineKeyboardButton("📋 عرض الملاحظات السرية", callback_data="view_hidden_notes"))
-        markup.add(types.InlineKeyboardButton("🗑 حذف جميع الملاحظات", callback_data="clear_hidden_notes"))
+        markup.add(types.InlineKeyboardButton("📖 عرض الملاحظات", callback_data="view_hidden_notes"))
         markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
-        bot.edit_message_text("🔒 الخانة المخفية - لا يراها إلا المشرفون:", chat_id, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text("🔒 الخانة المخفية (للمشرفين فقط):", chat_id, call.message.message_id, reply_markup=markup)
 
-    elif data == "add_hidden_note" and is_admin(chat_id):
-        msg = bot.send_message(chat_id, "✍️ اكتب الملاحظة السرية:")
+    elif data == "add_hidden_note":
+        msg = bot.edit_message_text("✍️ أرسل الملاحظة السرية لحفظها:", chat_id, call.message.message_id)
         bot.register_next_step_handler(msg, save_hidden_note)
 
-    elif data == "view_hidden_notes" and is_admin(chat_id):
+    elif data == "view_hidden_notes":
         conn = sqlite3.connect('archive_bot.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT note, timestamp FROM hidden_notes ORDER BY id DESC LIMIT 20")
+        cursor.execute("SELECT note, timestamp FROM hidden_notes ORDER BY id DESC LIMIT 10")
         notes = cursor.fetchall()
         conn.close()
         
-        if not notes:
-            bot.send_message(chat_id, "📭 لا توجد ملاحظات سرية محفوظة.", reply_markup=main_menu(chat_id))
-        else:
-            text = "🔒 *الملاحظات السرية:*\n\n"
-            for i, (note, ts) in enumerate(notes, 1):
-                text += f"{i}. {note}\n   ⏰ {ts}\n\n"
-            bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu(chat_id))
+        text = "📖 *آخر 10 ملاحظات سرية:*\n\n"
+        for n, ts in notes:
+            text += f"📍 {ts}\n📝 {n}\n\n"
+        
+        if not notes: text = "📭 لا توجد ملاحظات سرية بعد."
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="hidden_section"))
+        bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    elif data == "clear_hidden_notes" and is_admin(chat_id):
-        conn = sqlite3.connect('archive_bot.db')
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM hidden_notes")
-        conn.commit()
-        conn.close()
-        bot.send_message(chat_id, "✅ تم حذف جميع الملاحظات السرية.", reply_markup=main_menu(chat_id))
-
-    # --- إدارة الأنشطة ---
-    elif data == "manage_activities" and is_admin(chat_id):
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("➕ إضافة نشاط رئيسي جديد", callback_data="add_main_activity"))
-        markup.add(types.InlineKeyboardButton("➕ إضافة تفريع لنشاط موجود", callback_data="add_sub_activity"))
-        markup.add(types.InlineKeyboardButton("🗑 حذف نشاط رئيسي", callback_data="delete_main_activity"))
-        markup.add(types.InlineKeyboardButton("🗑 حذف تفريع من نشاط", callback_data="delete_sub_activity"))
-        markup.add(types.InlineKeyboardButton("✏️ تعديل اسم نشاط", callback_data="rename_activity"))
-        markup.add(types.InlineKeyboardButton("📋 عرض جميع الأنشطة", callback_data="list_all_activities"))
-        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="main_menu"))
-        bot.edit_message_text("📝 إدارة الأنشطة والتصنيفات:", chat_id, call.message.message_id, reply_markup=markup)
-
-    elif data == "add_main_activity" and is_admin(chat_id):
-        msg = bot.send_message(chat_id, "✍️ أدخل اسم النشاط الرئيسي الجديد:")
-        bot.register_next_step_handler(msg, process_add_main_activity)
-
-    elif data == "add_sub_activity" and is_admin(chat_id):
-        current_activities = load_activities()
-        text = "📋 الأنشطة الرئيسية الحالية:\n\n"
-        for i, act in enumerate(current_activities.keys(), 1):
-            text += f"{i}. {act}\n"
-        text += "\n✍️ أرسل رقم النشاط ثم فاصلة ثم اسم التفريع الجديد\nمثال: 1,تفريع جديد"
-        msg = bot.send_message(chat_id, text)
-        bot.register_next_step_handler(msg, process_add_sub_activity)
-
-    elif data == "delete_main_activity" and is_admin(chat_id):
-        current_activities = load_activities()
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for act in current_activities.keys():
-            markup.add(types.InlineKeyboardButton(f"🗑 {act}", callback_data=f"delact_{act[:40]}"))
-        markup.add(types.InlineKeyboardButton("⬅️ العودة", callback_data="manage_activities"))
-        bot.edit_message_text("اختر النشاط المراد حذفه:", chat_id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("delact_"):
-        act_to_delete = data.replace("delact_", "")
-        current_activities = load_activities()
-        for key in list(current_activities.keys()):
-            if key.startswith(act_to_delete) or key[:40] == act_to_delete:
-                del current_activities[key]
-                save_activities(current_activities)
-                bot.send_message(chat_id, f"✅ تم حذف النشاط: {key}", reply_markup=main_menu(chat_id))
-                return
-        bot.send_message(chat_id, "❌ لم يتم العثور على النشاط.", reply_markup=main_menu(chat_id))
-
-    elif data == "delete_sub_activity" and is_admin(chat_id):
-        current_activities = load_activities()
-        text = "📋 الأنشطة وتفريعاتها:\n\n"
-        for act, subs in current_activities.items():
-            text += f"🔹 {act}:\n"
-            if subs:
-                for sub in subs:
-                    text += f"   • {sub}\n"
-            else:
-                text += "   (بدون تفريعات)\n"
-        text += "\n✍️ أرسل اسم النشاط الرئيسي ثم فاصلة ثم اسم التفريع المراد حذفه\nمثال: أنشطة الإعلام,تحرير أخباري"
-        msg = bot.send_message(chat_id, text)
-        bot.register_next_step_handler(msg, process_delete_sub_activity)
-
-    elif data == "rename_activity" and is_admin(chat_id):
-        current_activities = load_activities()
-        text = "📋 الأنشطة الرئيسية:\n\n"
-        for i, act in enumerate(current_activities.keys(), 1):
-            text += f"{i}. {act}\n"
-        text += "\n✍️ أرسل رقم النشاط ثم فاصلة ثم الاسم الجديد\nمثال: 1,الاسم الجديد"
-        msg = bot.send_message(chat_id, text)
-        bot.register_next_step_handler(msg, process_rename_activity)
-
-    elif data == "list_all_activities" and is_admin(chat_id):
-        current_activities = load_activities()
-        text = "📋 *جميع الأنشطة والتفريعات:*\n\n"
-        for act, subs in current_activities.items():
-            text += f"🔹 *{act}*\n"
-            if subs:
-                for sub in subs:
-                    text += f"   ◽️ {sub}\n"
-            else:
-                text += "   (بدون تفريعات)\n"
-            text += "\n"
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu(chat_id))
-
-
-# --- دوال حفظ الرموز الجديدة ---
-def save_new_admin_password(message):
-    chat_id = message.chat.id
+def update_password(message, key):
     passwords = load_passwords()
-    passwords['admin_password'] = message.text.strip()
+    passwords[key] = message.text.strip()
     save_passwords(passwords)
-    bot.send_message(chat_id, f"✅ تم تغيير رمز المشرف بنجاح إلى: {message.text.strip()}", reply_markup=main_menu(chat_id))
+    bot.send_message(message.chat.id, "✅ تم تحديث الرمز بنجاح!", reply_markup=main_menu(message.chat.id))
 
-def save_new_user_password(message):
+# --- معالجة الصور والرسائل لوضع القالب ---
+@bot.message_handler(content_types=['photo', 'text', 'video', 'document'])
+def handle_all_messages(message):
     chat_id = message.chat.id
-    passwords = load_passwords()
-    passwords['user_password'] = message.text.strip()
-    save_passwords(passwords)
-    bot.send_message(chat_id, f"✅ تم تغيير رمز المستخدم بنجاح إلى: {message.text.strip()}", reply_markup=main_menu(chat_id))
+    session = user_sessions.get(chat_id, {})
+    
+    # التحقق من وضع القالب
+    if session.get('mode') == 'template':
+        if message.content_type == 'photo':
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            
+            # حفظ الصورة مؤقتاً
+            if not os.path.exists('/home/ubuntu/archive-bot/temp'):
+                os.makedirs('/home/ubuntu/archive-bot/temp')
+            
+            img_path = f'/home/ubuntu/archive-bot/temp/{chat_id}_{len(session["images"])}.jpg'
+            with open(img_path, 'wb') as new_file:
+                new_file.write(downloaded_file)
+            
+            session['images'].append(img_path)
+            
+            if len(session['images']) < 4:
+                bot.send_message(chat_id, f"✅ تم استلام الصورة ({len(session['images'])}/4). أرسل الصورة التالية.")
+            else:
+                msg = bot.send_message(chat_id, "✅ اكتمل استلام الصور الأربع.\n\n✍️ الآن أرسل *عنوان النشاط*:", parse_mode="Markdown")
+                bot.register_next_step_handler(msg, process_template_title)
+            return
+
+    # إذا لم يكن في وضع القالب، ننتقل لمعالجة الأرشفة العادية
+    if session.get('month'):
+        process_archive_input(message)
+    else:
+        # إذا لم يكن هناك جلسة نشطة، نطلب منه البدء
+        if message.content_type == 'text' and not message.text.startswith('/'):
+            bot.send_message(chat_id, "❌ يرجى البدء من القائمة الرئيسية أو تسجيل الدخول أولاً عبر /start")
+
+def process_template_title(message):
+    chat_id = message.chat.id
+    if message.content_type != 'text':
+        msg = bot.send_message(chat_id, "❌ يرجى إرسال نص للعنوان:")
+        bot.register_next_step_handler(msg, process_template_title)
+        return
+    
+    user_sessions[chat_id]['title'] = message.text
+    msg = bot.send_message(chat_id, "✍️ رائع، الآن أرسل *تفاصيل النشاط* (التاريخ، الجهة، المكان):", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_template_details)
+
+def process_template_details(message):
+    chat_id = message.chat.id
+    if message.content_type != 'text':
+        msg = bot.send_message(chat_id, "❌ يرجى إرسال نص للتفاصيل:")
+        bot.register_next_step_handler(msg, process_template_details)
+        return
+    
+    session = user_sessions[chat_id]
+    session['details'] = message.text
+    
+    bot.send_message(chat_id, "⏳ جاري معالجة الصور وتوليد القالب، يرجى الانتظار...")
+    
+    try:
+        output_path = f'/home/ubuntu/archive-bot/temp/result_{chat_id}.png'
+        process_template(session['images'], session['title'], session['details'], output_path)
+        
+        with open(output_path, 'rb') as photo:
+            bot.send_photo(chat_id, photo, caption="✨ تم تجهيز قالب (وجد أثر العمل) بنجاح!")
+            
+        # تنظيف الملفات المؤقتة
+        for img in session['images']:
+            if os.path.exists(img): os.remove(img)
+        if os.path.exists(output_path): os.remove(output_path)
+        
+        # العودة للقائمة الرئيسية
+        user_sessions[chat_id] = {}
+        bot.send_message(chat_id, "الرجاء اختيار القسم المطلوب من القائمة أدناه:", reply_markup=main_menu(chat_id))
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ حدث خطأ أثناء معالجة الصورة: {str(e)}")
+        user_sessions[chat_id] = {}
 
 # --- دوال الخانة المخفية ---
 def save_hidden_note(message):
@@ -580,7 +607,6 @@ def process_rename_activity(message):
     except:
         bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: رقم,الاسم الجديد", reply_markup=main_menu(chat_id))
 
-
 # --- الانتقال لمرحلة رفع المادة المؤرشفة ---
 def goToUploadStage(chat_id, message_id):
     session = user_sessions[chat_id]
@@ -594,7 +620,6 @@ def process_archive_input(message):
     session = user_sessions.get(chat_id, {})
     
     if not session or 'month' not in session:
-        bot.send_message(chat_id, "❌ حدث خطأ في الجلسة، يرجى البدء من جديد عبر /start")
         return
 
     content_type = ""
@@ -642,7 +667,6 @@ def process_archive_input(message):
             except Exception:
                 pass
 
-
 # --- نظام التقارير الإحصائية الشهرية ---
 def generate_statistics(chat_id, month):
     conn = sqlite3.connect('archive_bot.db')
@@ -670,7 +694,6 @@ def generate_statistics(chat_id, month):
     markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة", callback_data="main_menu"))
     bot.send_message(chat_id, report, parse_mode="Markdown", reply_markup=markup)
 
-
 # --- تقارير الفترات (ربع سنوي / نصف سنوي / سنوي) ---
 def generate_period_statistics(chat_id, months_list, period_name):
     conn = sqlite3.connect('archive_bot.db')
@@ -691,7 +714,6 @@ def generate_period_statistics(chat_id, months_list, period_name):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("⬅️ العودة للقائمة", callback_data="main_menu"))
     bot.send_message(chat_id, report, parse_mode="Markdown", reply_markup=markup)
-
 
 # --- محرك سحب البيانات للمشرفين ---
 def pull_data_for_admin(admin_id, month, week):
@@ -721,7 +743,6 @@ def pull_data_for_admin(admin_id, month, week):
             bot.send_document(admin_id, file_id, caption=caption_text)
 
     bot.send_message(admin_id, "✨ تم سحب جميع البيانات بنجاح.", reply_markup=main_menu(admin_id))
-
 
 # --- تشغيل البوت ---
 if __name__ == '__main__':
