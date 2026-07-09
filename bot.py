@@ -7,7 +7,7 @@ from datetime import datetime
 from image_processor import process_template
 
 # --- الإعدادات الأساسية ---
-API_TOKEN = '8951535425:AAHUWdQgR36yjvIq-6NdUt1sIDreYXGAuE'
+API_TOKEN = '8951535425:AAHUWdQgR36yjvIq-6NdUt1sIDrreYXGAuE'
 bot = telebot.TeleBot(API_TOKEN)
 
 # --- ملف حفظ الرموز ---
