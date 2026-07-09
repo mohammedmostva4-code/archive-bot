@@ -5,6 +5,8 @@ import os
 import json
 from datetime import datetime
 from image_processor import process_template
+import threading
+import time
 
 # --- الإعدادات الأساسية ---
 API_TOKEN = '8951535425:AAHUWdQgR36yjvIq-6NdUt1sIDrreYXGAuE'
@@ -209,8 +211,8 @@ def callback_listener(call):
         
     # --- مسار القالب الجديد (وجد أثر العمل) ---
     elif data == "template_start":
-        user_sessions[chat_id] = {'mode': 'template', 'images': [], 'title': '', 'details': ''}
-        bot.edit_message_text("🖼 *مرحباً بك في خدمة قالب وجد أثر العمل*\n\n📸 فضلاً أرسل الآن 4 صور للنشاط (واحدة تلو الأخرى أو دفعة واحدة).", chat_id, call.message.message_id, parse_mode="Markdown")
+        user_sessions[chat_id] = {'mode': 'template', 'images': [], 'title': '', 'details': '', 'last_msg_id': None}
+        bot.edit_message_text("🖼 *مرحباً بك في خدمة قالب وجد أثر العمل*\n\n📸 فضلاً أرسل الآن 4 صور للنشاط (يمكنك إرسالها دفعة واحدة).", chat_id, call.message.message_id, parse_mode="Markdown")
 
     # --- مسار الأرشفة ---
     elif data == "start_archive":
@@ -446,40 +448,58 @@ def update_password(message, key):
     bot.send_message(message.chat.id, "✅ تم تحديث الرمز بنجاح!", reply_markup=main_menu(message.chat.id))
 
 # --- معالجة الصور والرسائل لوضع القالب ---
-@bot.message_handler(content_types=['photo', 'text', 'video', 'document'])
-def handle_all_messages(message):
+@bot.message_handler(content_types=['photo'])
+def handle_photos(message):
     chat_id = message.chat.id
     session = user_sessions.get(chat_id, {})
     
-    # التحقق من وضع القالب
     if session.get('mode') == 'template':
-        if message.content_type == 'photo':
-            file_id = message.photo[-1].file_id
-            file_info = bot.get_file(file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            
-            # حفظ الصورة مؤقتاً
-            if not os.path.exists('/home/ubuntu/archive-bot/temp'):
-                os.makedirs('/home/ubuntu/archive-bot/temp')
-            
-            img_path = f'/home/ubuntu/archive-bot/temp/{chat_id}_{len(session["images"])}.jpg'
-            with open(img_path, 'wb') as new_file:
-                new_file.write(downloaded_file)
-            
-            session['images'].append(img_path)
-            
-            if len(session['images']) < 4:
-                bot.send_message(chat_id, f"✅ تم استلام الصورة ({len(session['images'])}/4). أرسل الصورة التالية.")
-            else:
-                msg = bot.send_message(chat_id, "✅ اكتمل استلام الصور الأربع.\n\n✍️ الآن أرسل *عنوان النشاط*:", parse_mode="Markdown")
-                bot.register_next_step_handler(msg, process_template_title)
+        # منع التكرار في حال إرسال صور كثيرة
+        if len(session['images']) >= 4:
             return
 
-    # إذا لم يكن في وضع القالب، ننتقل لمعالجة الأرشفة العادية
+        file_id = message.photo[-1].file_id
+        file_info = bot.get_file(file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        if not os.path.exists('/home/ubuntu/archive-bot/temp'):
+            os.makedirs('/home/ubuntu/archive-bot/temp')
+        
+        img_path = f'/home/ubuntu/archive-bot/temp/{chat_id}_{len(session["images"])}.jpg'
+        with open(img_path, 'wb') as new_file:
+            new_file.write(downloaded_file)
+        
+        session['images'].append(img_path)
+        
+        # استخدام مؤقت لإرسال رسالة الحالة لتجنب الرسائل المتكررة عند الإرسال دفعة واحدة
+        def send_status():
+            time.sleep(1) # انتظار بسيط للتأكد من وصول الصور الأخرى
+            current_count = len(session['images'])
+            if current_count < 4:
+                # إرسال رسالة واحدة فقط تعبر عن العدد الحالي
+                if session.get('last_msg_id'):
+                    try: bot.delete_message(chat_id, session['last_msg_id'])
+                    except: pass
+                msg = bot.send_message(chat_id, f"✅ تم استلام {current_count} من 4 صور. أرسل الباقي...")
+                session['last_msg_id'] = msg.message_id
+            elif current_count == 4 and session.get('mode') == 'template':
+                session['mode'] = 'template_naming' # تغيير الوضع لمنع استلام صور إضافية
+                msg = bot.send_message(chat_id, "✅ اكتمل استلام الصور الأربع.\n\n✍️ الآن أرسل *عنوان النشاط*:", parse_mode="Markdown")
+                bot.register_next_step_handler(msg, process_template_title)
+
+        threading.Thread(target=send_status).start()
+    
+    elif session.get('month'):
+        process_archive_input(message)
+
+@bot.message_handler(content_types=['text', 'video', 'document'])
+def handle_other_messages(message):
+    chat_id = message.chat.id
+    session = user_sessions.get(chat_id, {})
+    
     if session.get('month'):
         process_archive_input(message)
     else:
-        # إذا لم يكن هناك جلسة نشطة، نطلب منه البدء
         if message.content_type == 'text' and not message.text.startswith('/'):
             bot.send_message(chat_id, "❌ يرجى البدء من القائمة الرئيسية أو تسجيل الدخول أولاً عبر /start")
 
@@ -508,10 +528,13 @@ def process_template_details(message):
     
     try:
         output_path = f'/home/ubuntu/archive-bot/temp/result_{chat_id}.png'
-        process_template(session['images'], session['title'], session['details'], output_path)
+        success = process_template(session['images'], session['title'], session['details'], output_path)
         
-        with open(output_path, 'rb') as photo:
-            bot.send_photo(chat_id, photo, caption="✨ تم تجهيز قالب (وجد أثر العمل) بنجاح!")
+        if success and os.path.exists(output_path):
+            with open(output_path, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption="✨ تم تجهيز قالب (وجد أثر العمل) بنجاح!")
+        else:
+            bot.send_message(chat_id, "❌ فشل في معالجة الصور. يرجى التأكد من جودة الصور والمحاولة مرة أخرى.")
             
         # تنظيف الملفات المؤقتة
         for img in session['images']:
@@ -523,7 +546,7 @@ def process_template_details(message):
         bot.send_message(chat_id, "الرجاء اختيار القسم المطلوب من القائمة أدناه:", reply_markup=main_menu(chat_id))
         
     except Exception as e:
-        bot.send_message(chat_id, f"❌ حدث خطأ أثناء معالجة الصورة: {str(e)}")
+        bot.send_message(chat_id, f"❌ حدث خطأ غير متوقع: {str(e)}")
         user_sessions[chat_id] = {}
 
 # --- دوال الخانة المخفية ---
@@ -565,9 +588,9 @@ def process_add_sub_activity(message):
             save_activities(current_activities)
             bot.send_message(chat_id, f"✅ تم إضافة التفريع '{sub_name}' إلى '{act_keys[act_num]}'", reply_markup=main_menu(chat_id))
         else:
-            bot.send_message(chat_id, "❌ رقم النشاط غير صحيح!", reply_markup=main_menu(chat_id))
+            bot.send_message(chat_id, "❌ رقم النشاط غير صحيح!")
     except:
-        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: رقم,اسم التفريع", reply_markup=main_menu(chat_id))
+        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: رقم,اسم التفريع")
 
 def process_delete_sub_activity(message):
     chat_id = message.chat.id
@@ -583,9 +606,9 @@ def process_delete_sub_activity(message):
             save_activities(current_activities)
             bot.send_message(chat_id, f"✅ تم حذف التفريع '{sub_name}' من '{act_name}'", reply_markup=main_menu(chat_id))
         else:
-            bot.send_message(chat_id, "❌ لم يتم العثور على النشاط أو التفريع!", reply_markup=main_menu(chat_id))
+            bot.send_message(chat_id, "❌ لم يتم العثور على النشاط أو التفريع!")
     except:
-        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: اسم النشاط,اسم التفريع", reply_markup=main_menu(chat_id))
+        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: اسم النشاط,اسم التفريع")
 
 def process_rename_activity(message):
     chat_id = message.chat.id
@@ -603,9 +626,9 @@ def process_rename_activity(message):
             save_activities(current_activities)
             bot.send_message(chat_id, f"✅ تم تغيير اسم النشاط من '{old_name}' إلى '{new_name}'", reply_markup=main_menu(chat_id))
         else:
-            bot.send_message(chat_id, "❌ رقم النشاط غير صحيح!", reply_markup=main_menu(chat_id))
+            bot.send_message(chat_id, "❌ رقم النشاط غير صحيح!")
     except:
-        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: رقم,الاسم الجديد", reply_markup=main_menu(chat_id))
+        bot.send_message(chat_id, "❌ صيغة غير صحيحة! استخدم: رقم,الاسم الجديد")
 
 # --- الانتقال لمرحلة رفع المادة المؤرشفة ---
 def goToUploadStage(chat_id, message_id):
