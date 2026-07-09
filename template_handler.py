@@ -28,7 +28,6 @@ def handle_template_photo(bot, message):
 
     session = template_sessions[chat_id]
     
-    # منع استقبال أكثر من 4 صور
     if len(session['images']) >= 4:
         return True
 
@@ -36,17 +35,18 @@ def handle_template_photo(bot, message):
     file_info = bot.get_file(file_id)
     downloaded_file = bot.download_file(file_info.file_path)
     
-    temp_dir = '/home/ubuntu/archive-bot/temp'
+    # استخدام مسار نسبي للمجلد المؤقت
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    temp_dir = os.path.join(base_dir, 'temp')
     if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
+        os.makedirs(temp_dir, exist_ok=True)
     
-    img_path = f'{temp_dir}/{chat_id}_{len(session["images"])}.jpg'
+    img_path = os.path.join(temp_dir, f'{chat_id}_{len(session["images"])}.jpg')
     with open(img_path, 'wb') as f:
         f.write(downloaded_file)
     
     session['images'].append(img_path)
     
-    # إدارة رسائل الحالة بشكل ذكي عند الإرسال دفعة واحدة
     def update_status():
         time.sleep(0.8)
         count = len(session['images'])
@@ -96,14 +96,16 @@ def process_details_step(bot, message):
     bot.send_message(chat_id, "⏳ جاري معالجة الصور وتوليد القالب، يرجى الانتظار...")
     
     try:
-        output_path = f'/home/ubuntu/archive-bot/temp/result_{chat_id}.png'
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(base_dir, 'temp', f'result_{chat_id}.png')
+        
         success = process_template(session['images'], session['title'], session['details'], output_path)
         
         if success and os.path.exists(output_path):
             with open(output_path, 'rb') as photo:
                 bot.send_photo(chat_id, photo, caption="✨ تم تجهيز قالب (وجد أثر العمل) بنجاح!")
         else:
-            bot.send_message(chat_id, "❌ فشل في معالجة الصور. يرجى المحاولة مرة أخرى.")
+            bot.send_message(chat_id, "❌ فشل في معالجة الصور. يرجى التأكد من جودة الصور والمحاولة مرة أخرى.")
             
         # تنظيف
         for img in session['images']:
@@ -111,8 +113,8 @@ def process_details_step(bot, message):
         if os.path.exists(output_path): os.remove(output_path)
         
     except Exception as e:
-        bot.send_message(chat_id, f"❌ حدث خطأ: {str(e)}")
+        bot.send_message(chat_id, f"❌ حدث خطأ غير متوقع: {str(e)}")
     
-    # إنهاء الجلسة والعودة للقائمة الرئيسية (سيتم استدعاء main_menu من bot.py)
-    del template_sessions[chat_id]
+    if chat_id in template_sessions:
+        del template_sessions[chat_id]
     return True

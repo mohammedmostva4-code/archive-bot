@@ -5,12 +5,13 @@ from bidi.algorithm import get_display
 
 def process_template(images_paths, title, details, output_path):
     try:
-        # تحديد المسارات الأساسية
+        # استخدام المسار النسبي الصحيح للمجلد الحالي
         base_dir = os.path.dirname(os.path.abspath(__file__))
         template_path = os.path.join(base_dir, 'template.png')
         
         if not os.path.exists(template_path):
-            raise FileNotFoundError(f"Template not found at {template_path}")
+            print(f"DEBUG: Template not found at {template_path}")
+            return False
             
         template = Image.open(template_path).convert('RGB')
         width, height = template.size
@@ -31,6 +32,10 @@ def process_template(images_paths, title, details, output_path):
 
         for i, img_path in enumerate(images_paths):
             if i >= 4: break
+            if not os.path.exists(img_path):
+                print(f"DEBUG: Image {i} not found at {img_path}")
+                continue
+                
             img = Image.open(img_path).convert('RGB')
             target_w = boxes[i][2] - boxes[i][0]
             target_h = boxes[i][3] - boxes[i][1]
@@ -51,20 +56,25 @@ def process_template(images_paths, title, details, output_path):
                 
             template.paste(img, (boxes[i][0], boxes[i][1]))
 
-        # الكتابة باستخدام الخطوط المحلية المرفقة
+        # الكتابة باستخدام الخطوط المحلية
         draw = ImageDraw.Draw(template)
         font_bold = os.path.join(base_dir, 'fonts', 'Bold.ttf')
         font_reg = os.path.join(base_dir, 'fonts', 'Regular.ttf')
 
-        # التأكد من وجود الخطوط، وإلا استخدام الخط الافتراضي
-        if os.path.exists(font_bold):
-            title_font = ImageFont.truetype(font_bold, 42)
-        else:
+        # تحميل الخطوط مع التحقق
+        try:
+            if os.path.exists(font_bold):
+                title_font = ImageFont.truetype(font_bold, 42)
+            else:
+                title_font = ImageFont.load_default()
+                
+            if os.path.exists(font_reg):
+                details_font = ImageFont.truetype(font_reg, 22)
+            else:
+                details_font = ImageFont.load_default()
+        except Exception as fe:
+            print(f"DEBUG: Font error: {fe}")
             title_font = ImageFont.load_default()
-
-        if os.path.exists(font_reg):
-            details_font = ImageFont.truetype(font_reg, 22)
-        else:
             details_font = ImageFont.load_default()
 
         # معالجة النصوص العربية
@@ -78,8 +88,10 @@ def process_template(images_paths, title, details, output_path):
         details_bbox = draw.textbbox((0, 0), display_details, font=details_font)
         draw.text(((width - (details_bbox[2] - details_bbox[0])) // 2, 640), display_details, font=details_font, fill="white")
 
+        # التأكد من وجود مجلد المخرجات
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         template.save(output_path, "PNG")
         return True
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"CRITICAL ERROR in image processing: {e}")
         return False
