@@ -384,7 +384,8 @@ def handle_photos(message):
 @bot.message_handler(content_types=['text', 'video', 'document'])
 def handle_all_messages(message):
     chat_id = message.chat.id
-    if chat_id in template_sessions: return # يتم التعامل معه عبر register_next_step_handler
+    if chat_id in template_sessions and template_sessions[chat_id]['step'] != 'images':
+        return # يتم التعامل معه عبر register_next_step_handler
     if user_sessions.get(chat_id, {}).get('month'): process_archive_input(message)
     elif message.content_type == 'text' and not message.text.startswith('/'):
         bot.send_message(chat_id, "❌ يرجى البدء من القائمة الرئيسية أو تسجيل الدخول أولاً عبر /start")
